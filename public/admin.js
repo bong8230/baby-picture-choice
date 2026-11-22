@@ -5,6 +5,8 @@ import { parse } from './vendor/exifr/lite.esm.mjs';
 
 const THUMB_SIDE = 1600;
 const THUMB_QUALITY = 0.85;
+const PREVIEW_SIDE = 480;
+const PREVIEW_QUALITY = 0.8;
 const MAX_ORIGINAL_BYTES = 50 * 1024 * 1024;
 const EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']);
 const STATUS_LABELS = {
@@ -176,9 +178,20 @@ async function analyzeWeek(week, newEntries) {
   for (const { file, score, reason, duplicateOf } of excluded) {
     Object.assign(byFile.get(file), { score, reason, duplicate: byFile.get(duplicateOf)?.name });
   }
+  let previewDone = 0;
   for (const entry of newEntries) {
     if (!entry.reason || entry.reason === 'blur' || entry.reason === 'duplicate') {
-      entry.preview = URL.createObjectURL(entry.original);
+      // Chrome on Android cannot render HEIC in <img>, so HEIC previews are decoded to a small JPEG.
+      if (entry.ext === 'heic' || entry.ext === 'heif') {
+        progress.textContent = `${week} 미리보기 만드는 중 ${++previewDone}`;
+        try {
+          entry.preview = URL.createObjectURL(await makeThumbnail(entry.original, PREVIEW_SIDE, PREVIEW_QUALITY));
+        } catch (error) {
+          console.warn('[admin] preview failed', entry.name, error);
+        }
+      } else {
+        entry.preview = URL.createObjectURL(entry.original);
+      }
     }
   }
   drafts.set(week, { entries, warnings });
@@ -216,11 +229,11 @@ async function analyzeSelection(files) {
   notice.textContent = problems.join('\n');
 }
 
-async function makeThumbnail(file) {
+async function makeThumbnail(file, side = THUMB_SIDE, quality = THUMB_QUALITY) {
   const bitmap = await decodeToBitmap(file);
   const canvas = document.createElement('canvas');
   try {
-    const scale = Math.min(1, THUMB_SIDE / Math.max(bitmap.width, bitmap.height));
+    const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     const context = canvas.getContext('2d', { alpha: false });
@@ -232,7 +245,7 @@ async function makeThumbnail(file) {
       canvas.toBlob((blob) => {
         if (blob) resolve(blob);
         else reject(new Error('썸네일을 만들 수 없습니다.'));
-      }, 'image/jpeg', THUMB_QUALITY);
+      }, 'image/jpeg', quality);
     });
   } finally {
     bitmap.close();
