@@ -7,3 +7,5 @@ Published 2026-10-04. No network access at runtime; no threads / SharedArrayBuff
 SHA-256:
 095194187be00d3e36335b8ad7f5552d70655e5e2159486d7d36cd4daa47bba9  libheif-bundle.mjs
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118  LICENSE
+
+NOTE: libheif output is not color-managed (embedded ICC profiles are ignored; pixels are treated as sRGB).

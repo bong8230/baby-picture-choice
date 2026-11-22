@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { decodeHeicPixels, decodeToBitmap, isHeic, toFullJpeg } from '../public/decode.js';
+import { assertPixelLimit, decodeHeicPixels, decodeToBitmap, isHeic, toError, toFullJpeg } from '../public/decode.js';
 
 test('isHeic matches extension (any case) and mime type', () => {
   assert.equal(isHeic({ name: 'a.HEIC', type: '' }), true);
@@ -37,4 +37,16 @@ test('decodes a real HEIC fixture to RGBA pixels with correct size and colors', 
   const px = (x, y) => Array.from(data.slice((y * width + x) * 4, (y * width + x) * 4 + 3));
   assert.ok(px(8, 16)[0] > 200 && px(8, 16)[2] < 60, 'left half red');
   assert.ok(px(56, 16)[2] > 200 && px(56, 16)[0] < 60, 'right half blue');
+});
+
+test('assertPixelLimit caps at 50MP', () => {
+  assert.doesNotThrow(() => assertPixelLimit(8000, 6250));
+  assert.throws(() => assertPixelLimit(8001, 6250), /최대 50MP/);
+});
+
+test('toError wraps non-Error values', () => {
+  assert.ok(toError(42) instanceof Error);
+  assert.equal(toError('boom').message, 'boom');
+  const e = new Error('x');
+  assert.equal(toError(e), e);
 });

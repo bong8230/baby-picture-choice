@@ -224,6 +224,7 @@ async function makeThumbnail(file) {
     canvas.width = Math.max(1, Math.round(bitmap.width * scale));
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('캔버스를 만들 수 없습니다.');
     context.fillStyle = '#fff';
     context.fillRect(0, 0, canvas.width, canvas.height);
     bitmap.draw(context, canvas.width, canvas.height);
