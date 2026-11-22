@@ -1,0 +1,4 @@
+{
+  "adminLogin": "your-tailscale-login@example.com",
+  "port": 8790
+}

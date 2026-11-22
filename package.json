@@ -1,0 +1,13 @@
+{
+  "name": "baby-picture-choice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "funnel:on": "node scripts/funnel.js on",
+    "funnel:off": "node scripts/funnel.js off",
+    "funnel:status": "node scripts/funnel.js status"
+  }
+}
