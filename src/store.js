@@ -366,6 +366,16 @@ export function createStore(rootDir, {
       });
     },
 
+    // Tokens of a started, non-revoked week; null otherwise (collecting / revoked / none).
+    async getLinksTokens(week) {
+      checkWeek(week);
+      return withLock(week, async () => {
+        const w = await load(week);
+        if (!w || !w.tokens || w.tokensRevoked || w.status === 'collecting') return null;
+        return { me: w.tokens.me, wife: w.tokens.wife };
+      });
+    },
+
     async findByToken(token) {
       if (typeof token !== 'string' || !token) return null;
       const t = Buffer.from(token);

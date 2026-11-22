@@ -123,6 +123,12 @@ async function captureDate(file) {
   return new Date(file.lastModified);
 }
 
+function isHeic(entry) {
+  if (!['format', 'unsupported'].includes(entry.reason)) return false;
+  const type = entry.original?.type ?? '';
+  return /\.(heic|heif)$/i.test(entry.name ?? '') || /hei[cf]/i.test(type);
+}
+
 function fileExtension(file) {
   const suffix = file.name.match(/\.([^.]+)$/)?.[1]?.toLowerCase();
   if (EXTENSIONS.has(suffix)) return suffix;
@@ -288,13 +294,24 @@ async function applyDraft(week, draft) {
   });
 }
 
+const linksTried = new Set();
+
+// Cached in memory only; otherwise fetched once from the admin links endpoint.
 function linksFor(week) {
   if (linksByWeek.has(week)) return linksByWeek.get(week);
-  try {
-    return JSON.parse(sessionStorage.getItem(`vote-links:${week}`));
-  } catch {
-    return null;
+  if (!linksTried.has(week)) {
+    linksTried.add(week);
+    request(`${weekPath(week)}/links`)
+      .then((response) => response.json())
+      .then(({ links }) => {
+        if (links?.me && links?.wife) {
+          linksByWeek.set(week, links);
+          render();
+        }
+      })
+      .catch(() => {});
   }
+  return null;
 }
 
 async function startVote(week) {
@@ -302,11 +319,6 @@ async function startVote(week) {
     const response = await request(`${weekPath(week)}/start`, { method: 'POST' });
     const { links } = await response.json();
     linksByWeek.set(week, links);
-    try {
-      sessionStorage.setItem(`vote-links:${week}`, JSON.stringify(links));
-    } catch {
-      // The links are still available on this page.
-    }
     const item = weeks.find((entry) => entry.week === week);
     if (item) item.status = 'voting';
     await refreshWeeks();
@@ -404,6 +416,9 @@ function renderDrafts() {
     if (draft.warnings.length) card.append(element('p', '얼굴 분석 없이 진행했습니다.', 'warning'));
     if (included.length > 32) card.append(element('p', '후보가 32장을 넘었습니다.', 'warning'));
     if (deletions) card.append(element('p', `올리면 PC에 저장된 후보 ${deletions}장을 삭제합니다.`, 'warning'));
+    if (excluded.some(isHeic)) {
+      card.append(element('p', "HEIC 사진은 지원되지 않아요. 갤럭시 카메라 설정에서 'HEIF 사진'을 끄면 JPEG로 저장돼요.", 'warning'));
+    }
     card.append(element('h4', `선택한 사진 ${included.length}장`), photoList(included, true));
     const details = element('details');
     details.open = excluded.length > 0;

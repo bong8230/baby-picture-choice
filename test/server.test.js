@@ -348,3 +348,26 @@ test('Host allowlist: no generic ts.net wildcard; config.allowedHosts is case-in
   assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'attacker.tailxxxx.ts.net' } })).status, 404);
   assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'other.example.net:10000' } })).status, 200);
 });
+
+test('admin links endpoint: returns start links, 404 for funnel / non-admin / revoked / collecting', async (t) => {
+  const { port, store } = await setup(t);
+  const week = '2026-W47';
+  const url = `/api/admin/weeks/${week}/links`;
+  assert.equal((await req(port, 'GET', url, { headers: ADMIN_H })).status, 404); // no such week
+  await store.addPhoto(week, photo(0));
+  await store.addPhoto(week, photo(1));
+  assert.equal((await req(port, 'GET', url, { headers: ADMIN_H })).status, 404); // collecting
+  const start = await req(port, 'POST', `/api/admin/weeks/${week}/start`, { headers: ADMIN_H });
+  const got = await req(port, 'GET', url, { headers: ADMIN_H });
+  assert.equal(got.status, 200);
+  assert.deepEqual(got.json, start.json);
+  assert.equal((await req(port, 'GET', url, { headers: { ...FUNNEL, ...ADMIN_H } })).status, 404);
+  assert.equal((await req(port, 'GET', url)).status, 404);
+  assert.equal((await req(port, 'GET', url, { headers: { 'tailscale-user-login': 'other@example.com' } })).status, 404);
+
+  const done = '2026-W46';
+  await votingWeek(store, 1, done); // 1 photo settles to done
+  assert.equal((await req(port, 'GET', `/api/admin/weeks/${done}/links`, { headers: ADMIN_H })).status, 200);
+  await store.revokeDoneTokens();
+  assert.equal((await req(port, 'GET', `/api/admin/weeks/${done}/links`, { headers: ADMIN_H })).status, 404);
+});

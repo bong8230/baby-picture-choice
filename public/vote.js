@@ -29,7 +29,40 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 const imgUrl = (id) => `${base}/img/${encodeURIComponent(id)}`;
-const photoImg = (id, alt) => el('img', { src: imgUrl(id), alt: alt || '아기 사진', draggable: 'false' });
+// Retries a failed load (cache-busted) twice, then shows a tap-to-retry state on the photo.
+function photoImg(id, alt) {
+  const img = el('img', { src: imgUrl(id), alt: alt || '아기 사진', draggable: 'false' });
+  let tries = 0;
+  img.addEventListener('error', () => {
+    const host = img.parentElement;
+    if (tries < 2) {
+      tries += 1;
+      setTimeout(() => { img.src = `${imgUrl(id)}?r=${tries}`; }, 1000);
+      return;
+    }
+    if (!host || host.dataset.broken) return;
+    host.dataset.broken = '1';
+    img.hidden = true;
+    const msg = el('span', { class: 'img-fail', text: '사진을 불러오지 못했어요 — 탭해서 다시' });
+    host.append(msg);
+    host.retryImg = () => {
+      delete host.dataset.broken;
+      msg.remove();
+      tries = 0;
+      img.hidden = false;
+      img.src = `${imgUrl(id)}?r=${Date.now()}`;
+    };
+  });
+  return img;
+}
+// A tap on a failed photo only reloads it; it never reaches the pick handlers.
+document.addEventListener('click', (ev) => {
+  const host = ev.target instanceof Element ? ev.target.closest('[data-broken]') : null;
+  if (!host) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  host.retryImg?.();
+}, true);
 
 function showBanner(msg, fn) {
   bannerText.textContent = msg;

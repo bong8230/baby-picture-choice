@@ -209,7 +209,8 @@ export async function analyzeDay(files, { onProgress } = {}) {
     let landmarker;
     try {
       landmarker = await getFaceLandmarker();
-    } catch {
+    } catch (e) {
+      console.warn('[analyze]', 'face model', e);
       warnings.add('face-model-unavailable');
     }
 
@@ -228,12 +229,14 @@ export async function analyzeDay(files, { onProgress } = {}) {
         if (landmarker) {
           try {
             face = readFaceScores(landmarker.detect(canvas));
-          } catch {
+          } catch (e) {
+            console.warn('[analyze]', file?.name, e);
             warnings.add('face-inference-failed');
           }
         }
         photos.push({ file, ...metrics, ...face, hash: differenceHash(hashContext, canvas) });
-      } catch {
+      } catch (e) {
+        console.warn('[analyze]', file?.name, e);
         excluded.push({ file, score: null, reason: 'unsupported' });
       }
       onProgress?.({ done: index + 1, total });

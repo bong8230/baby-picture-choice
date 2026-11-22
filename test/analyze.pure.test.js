@@ -37,6 +37,7 @@ test('eyes and smile together account for at most 30 percent of the score', () =
 });
 
 test('a canvas read failure leaves later photos and progress intact', { timeout: 1000 }, async (t) => {
+  const warned = t.mock.method(console, 'warn', () => {});
   const canvases = [];
   const globals = {
     document: {
@@ -85,6 +86,7 @@ test('a canvas read failure leaves later photos and progress intact', { timeout:
   });
 
   assert.deepEqual(result.excluded, [{ file: broken, score: null, reason: 'unsupported' }]);
+  assert.ok(warned.mock.calls.some((c) => c.arguments[1] === 'broken.jpg'));
   assert.deepEqual(result.kept.map(({ file }) => file), [valid]);
   assert.deepEqual(progress, [{ done: 1, total: 2 }, { done: 2, total: 2 }]);
   assert.deepEqual(canvases.slice(0, 2).map(({ width }) => width), [0, 0]);

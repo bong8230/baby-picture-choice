@@ -292,6 +292,11 @@ export function createServer({
       await store.setScores(d, await readJson(req));
       return json(res, 200, { ok: true });
     }
+    if (n === 5 && e === 'links' && m === 'GET') {
+      const t = await store.getLinksTokens(d);
+      if (!t) return notFound(res);
+      return json(res, 200, { links: { me: `${publicBase}/v/${t.me}`, wife: `${publicBase}/v/${t.wife}` } });
+    }
     if (n === 5 && e === 'start' && m === 'POST') {
       const t = await store.startVoting(d);
       return json(res, 200, { links: { me: `${publicBase}/v/${t.me}`, wife: `${publicBase}/v/${t.wife}` } });
