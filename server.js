@@ -41,6 +41,7 @@ export async function main() {
       break;
     } catch (e) {
       if (e.code !== 'EFAULT' || i >= 20) throw e;
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
   console.log(`listening on http://${HOST}:${port}`);

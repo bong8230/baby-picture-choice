@@ -87,13 +87,34 @@ function parsePath(rawUrl) {
   return { segs, path: '/' + segs.join('/'), query };
 }
 
-// Hosts we answer for. Blocks DNS-rebinding pages that point a foreign name at 127.0.0.1.
+// Hosts we answer for: loopback, the publicBase host and config.allowedHosts.
+// Blocks DNS-rebinding pages that point a foreign name at 127.0.0.1.
 function hostAllowed(host, extra) {
   if (typeof host !== 'string') return false;
   const name = host.replace(/:\d+$/, '').toLowerCase();
   if (name === '127.0.0.1' || name === 'localhost' || name === '[::1]') return true;
-  if (name.endsWith('.ts.net')) return true;
   return extra.includes(name);
+}
+
+// "host[:port]" lowercased, with the https default port dropped.
+const normHostPort = (h) => String(h).toLowerCase().replace(/:443$/, '');
+
+// CSRF guard for every non-GET request. Tailscale adds Tailscale-User-Login to cross-site
+// tailnet requests too, so a foreign page could otherwise auto-submit a form to admin routes.
+// Requires: X-Requested-With: fetch (a custom header forces a CORS preflight we never answer),
+// Sec-Fetch-Site absent or same-origin, and Origin (if sent) equal to https://<Host> or the
+// publicBase origin (in case the proxy rewrites Host).
+function sameOriginWrite(req, publicOrigin) {
+  if (req.headers['x-requested-with'] !== 'fetch') return false;
+  const site = req.headers['sec-fetch-site'];
+  if (site !== undefined && site !== 'same-origin') return false;
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  let o;
+  try { o = new URL(origin); } catch { return false; }
+  if (o.protocol !== 'https:') return false;
+  const got = normHostPort(o.host);
+  return got === normHostPort(req.headers.host ?? '') || got === publicOrigin;
 }
 
 export function createServer({
@@ -110,7 +131,11 @@ export function createServer({
   if (!store) throw new Error('createServer: store is required');
   const adminLogin = typeof config.adminLogin === 'string' ? config.adminLogin : '';
   const publicBase = String(config.publicBase || DEFAULT_PUBLIC_BASE).replace(/\/+$/, '');
-  const extraHosts = [new URL(publicBase).hostname.toLowerCase(), ...(config.allowedHosts || [])];
+  const extraHosts = [
+    new URL(publicBase).hostname.toLowerCase(),
+    ...(Array.isArray(config.allowedHosts) ? config.allowedHosts : []).map((h) => String(h).toLowerCase()),
+  ];
+  const publicOrigin = normHostPort(new URL(publicBase).host);
   const weeksDir = join(rootDir, 'data', 'weeks');
   const publicRoot = resolve(publicDir);
 
@@ -169,6 +194,7 @@ export function createServer({
   async function sendPhoto(res, week, id, kind) {
     const file = await store.photoPath(week, id, kind);
     const ext = kind === 'thumb' ? 'jpg' : extname(file).slice(1).toLowerCase();
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     return sendFile(res, file, IMAGE_MIME[ext] || 'application/octet-stream', 'no-store');
   }
 
@@ -193,11 +219,14 @@ export function createServer({
 
   async function readJson(req) {
     const buf = await readBody(req, maxJsonBytes);
+    let v;
     try {
-      return buf.length ? JSON.parse(buf.toString('utf8')) : {};
+      v = buf.length ? JSON.parse(buf.toString('utf8')) : {};
     } catch {
       throw new StoreError('invalid', 'bad json');
     }
+    if (!v || typeof v !== 'object' || Array.isArray(v)) throw new StoreError('invalid', 'body must be a JSON object');
+    return v;
   }
 
   async function listPhotos(week) {
@@ -260,9 +289,7 @@ export function createServer({
       return json(res, 200, { ok: true });
     }
     if (n === 5 && e === 'scores' && m === 'PUT') {
-      const scores = await readJson(req);
-      if (!scores || typeof scores !== 'object' || Array.isArray(scores)) throw new StoreError('invalid', 'scores must be an object');
-      await store.setScores(d, scores);
+      await store.setScores(d, await readJson(req));
       return json(res, 200, { ok: true });
     }
     if (n === 5 && e === 'start' && m === 'POST') {
@@ -306,7 +333,7 @@ export function createServer({
         return json(res, 409, view ?? { error: 'conflict' });
       }
       // Never reveal details on the public surface: invalid / not_found look like a miss.
-      if (err instanceof StoreError && err.code !== 'state') return notFound(res);
+      if (err instanceof StoreError) return err.code === 'state' ? json(res, 409, { error: 'state' }) : notFound(res);
       if (err instanceof HttpError && err.status !== 413) return notFound(res);
       throw err;
     }
@@ -318,6 +345,7 @@ export function createServer({
     const parsed = parsePath(req.url);
     if (!parsed) return notFound(res);
     const { segs, path, query } = parsed;
+    if (req.method !== 'GET' && !sameOriginWrite(req, publicOrigin)) return notFound(res);
     const isFunnel = req.headers['tailscale-funnel-request'] !== undefined;
     const login = req.headers['tailscale-user-login'];
     const isAdmin = !isFunnel && adminLogin !== '' && typeof login === 'string' && login === adminLogin;

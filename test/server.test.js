@@ -13,7 +13,10 @@ const FUNNEL = { 'tailscale-funnel-request': '?1' };
 const ADMIN_H = { 'tailscale-user-login': ADMIN };
 
 // Raw request: http.request sends the path verbatim (fetch would normalize "..").
+// Non-GET requests send X-Requested-With: fetch like the real frontends; pass null to omit it.
 function req(port, method, path, { headers = {}, body } = {}) {
+  if (method !== 'GET') headers = { 'x-requested-with': 'fetch', ...headers };
+  headers = Object.fromEntries(Object.entries(headers).filter(([, v]) => v !== null));
   return new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
       const chunks = [];
@@ -42,6 +45,7 @@ async function listen(server) {
       });
     } catch (e) {
       if (!['EFAULT', 'EADDRINUSE', 'EACCES'].includes(e.code) || i >= 50) throw e;
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
 }
@@ -285,4 +289,62 @@ test('foreign Host header (DNS rebinding) is 404 even with admin login', async (
   const { port } = await setup(t);
   assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'evil.example.com:8790' } })).status, 404);
   assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'my-pc.example-tailnet.ts.net:10000' } })).status, 200);
+});
+
+test('cross-site writes are 404 and change nothing; same-origin fetch writes work', async (t) => {
+  const { port, store } = await setup(t);
+  await store.addPhoto(WEEK, photo(1));
+  const start = (headers) => req(port, 'POST', `/api/admin/weeks/${WEEK}/start`, { headers: { ...ADMIN_H, ...headers } });
+  const host = `127.0.0.1:${port}`;
+  const bad = [
+    { origin: 'https://evil.example' },
+    { 'sec-fetch-site': 'cross-site' },
+    { 'sec-fetch-site': 'same-site' },
+    { 'x-requested-with': null }, // plain form post
+    { 'x-requested-with': 'XMLHttpRequest' },
+    { origin: `http://${host}` }, // wrong scheme
+    { origin: 'null' },
+  ];
+  for (const h of bad) {
+    assert.equal((await start(h)).status, 404, JSON.stringify(h));
+    assert.equal((await store.listWeeks())[0].status, 'collecting', JSON.stringify(h));
+  }
+  // cross-site vote write is also blocked
+  const { tokens } = await votingWeek(store, 4, '2026-W40');
+  const s = (await req(port, 'GET', `/v/${tokens.me}/api/state`)).json;
+  const pick = await req(port, 'POST', `/v/${tokens.me}/api/pick`, {
+    headers: { origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' }, body: { matchId: s.match.id, winnerId: s.match.a },
+  });
+  assert.equal(pick.status, 404);
+  assert.deepEqual((await req(port, 'GET', `/v/${tokens.me}/api/state`)).json, s);
+  // same-origin: Origin matching Host, or the publicBase origin
+  const ok = await start({ origin: `https://${host}`, 'sec-fetch-site': 'same-origin' });
+  assert.equal(ok.status, 200);
+  assert.equal((await store.listWeeks()).find((w) => w.week === WEEK).status, 'done'); // 1 photo goes straight to done
+  await store.addPhoto('2026-W49', photo(2));
+  const ok2 = await req(port, 'POST', '/api/admin/weeks/2026-W49/start', {
+    headers: { ...ADMIN_H, origin: 'https://my-pc.example-tailnet.ts.net:10000', 'sec-fetch-site': 'same-origin' },
+  });
+  assert.equal(ok2.status, 200);
+});
+
+test('JSON bodies must be objects; token-route errors stay generic', async (t) => {
+  const { port, store } = await setup(t);
+  await store.addPhoto(WEEK, photo(1));
+  for (const body of ['[]', '1', 'null', '"x"']) {
+    assert.equal((await req(port, 'PUT', `/api/admin/weeks/${WEEK}/scores`, { headers: ADMIN_H, body })).status, 400, body);
+  }
+  const { tokens } = await votingWeek(store, 4, '2026-W40');
+  for (const body of ['[]', '1', 'null']) {
+    assert.equal((await req(port, 'POST', `/v/${tokens.me}/api/pick`, { body })).status, 404, body);
+  }
+  const id = (await req(port, 'GET', `/api/admin/weeks/${WEEK}/photos`, { headers: ADMIN_H })).json[0].id;
+  const img = await req(port, 'GET', `/api/admin/img/${WEEK}/${id}`, { headers: ADMIN_H });
+  assert.equal(img.headers['cross-origin-resource-policy'], 'same-origin');
+});
+
+test('Host allowlist: no generic ts.net wildcard; config.allowedHosts is case-insensitive', async (t) => {
+  const { port } = await setup(t, { config: { allowedHosts: ['Other.Example.Net'] } });
+  assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'attacker.tailxxxx.ts.net' } })).status, 404);
+  assert.equal((await req(port, 'GET', '/admin', { headers: { ...ADMIN_H, host: 'other.example.net:10000' } })).status, 200);
 });
