@@ -79,7 +79,11 @@ async function exists(p) {
   try { await access(p); return true; } catch { return false; }
 }
 
-export function createStore(rootDir, { rng = Math.random, now = Date.now } = {}) {
+// Options (tests): rng for bracket shuffles, now for timestamps, copyFile to inject copy
+// failures, log for non-fatal errors (default console.error).
+export function createStore(rootDir, {
+  rng = Math.random, now = Date.now, copyFile: copy = copyFile, log = (...a) => console.error(...a),
+} = {}) {
   const poolDir = join(rootDir, 'pool');
   const weeksDir = join(rootDir, 'data', 'weeks');
   const selectedDir = join(rootDir, 'selected');
@@ -100,7 +104,7 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     try {
       return JSON.parse(await readFile(weekFile(week), 'utf8'));
     } catch (e) {
-      if (e.code === 'ENOENT') return null;
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null;
       throw e;
     }
   }
@@ -108,6 +112,16 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     const w = await load(week);
     if (!w) throw new StoreError('not_found', `no week ${week}`);
     return w;
+  }
+  // For scans (listWeeks/findByToken): a corrupt week file is logged and skipped.
+  async function safeLoad(week) {
+    try {
+      return await load(week);
+    } catch (e) {
+      if (!(e instanceof SyntaxError)) throw e;
+      log(`store: skipping unparseable ${weekFile(week)}: ${e.message}`);
+      return null;
+    }
   }
   async function save(w) {
     await mkdir(weeksDir, { recursive: true });
@@ -170,23 +184,41 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
       const p = findPhoto(w, f.id);
       const tmp = join(selectedDir, `.${f.name}.${randomBytes(4).toString('hex')}.tmp`);
       try {
-        await copyFile(join(poolDir, w.week, `${p.id}.${p.ext}`), tmp);
+        await copy(join(poolDir, w.week, `${p.id}.${p.ext}`), tmp);
         if (await exists(dest)) continue; // appeared meanwhile: keep it
         await renameRetry(tmp, dest);
       } finally {
         await unlink(tmp).catch(() => {});
       }
     }
-    w.status = 'done';
-    w.doneAt = now();
-    await save(w);
+    const done = { ...w, status: 'done', doneAt: now() };
+    await save(done);
+    Object.assign(w, done);
+  }
+
+  // Copy failures are not fatal: the week stays 'finalizing' and the copy is retried on the
+  // next locked load (tryFinish) or by resumeFinalize(). Caller holds the lock.
+  async function tryFinish(w) {
+    if (w.status !== 'finalizing') return;
+    try {
+      await copyFinal(w);
+    } catch (e) {
+      log(`store: finalize copy for ${w.week} failed, will retry: ${e.message}`);
+    }
+  }
+
+  // Locked load used by voter reads and vote ops: retries a pending finalize first.
+  async function loadLive(week) {
+    const w = await mustLoad(week);
+    await tryFinish(w);
+    return w;
   }
 
   // settle + persist + (if finalizing) copy. Caller holds the lock.
   async function commit(w) {
     settle(w);
     await save(w);
-    if (w.status === 'finalizing') await copyFinal(w);
+    await tryFinish(w);
   }
 
   function view(w, voter) {
@@ -222,7 +254,7 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     checkWeek(week);
     checkVoter(voter);
     return withLock(week, async () => {
-      const w = await mustLoad(week);
+      const w = await loadLive(week);
       if (!w.voters) throw new StoreError('state', `week ${week} is not voting`);
       try {
         mutate(w);
@@ -239,7 +271,7 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     async listWeeks() {
       const out = [];
       for (const week of await listWeekIds()) {
-        const w = await load(week);
+        const w = await safeLoad(week);
         if (!w) continue;
         out.push({
           week,
@@ -270,10 +302,16 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
         const id = randomBytes(9).toString('base64url');
         const dir = join(poolDir, week);
         await mkdir(dir, { recursive: true });
-        await atomicWrite(join(dir, `${id}.${e}`), bytes);
-        await atomicWrite(join(dir, `${id}.thumb.jpg`), thumb);
-        w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt: now() });
-        await save(w);
+        const files = [join(dir, `${id}.${e}`), join(dir, `${id}.thumb.jpg`)];
+        try {
+          await atomicWrite(files[0], bytes);
+          await atomicWrite(files[1], thumb);
+          w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt: now() });
+          await save(w);
+        } catch (err) {
+          for (const f of files) await unlink(f).catch(() => {});
+          throw err;
+        }
         return { id };
       });
     },
@@ -332,7 +370,7 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
       if (typeof token !== 'string' || !token) return null;
       const t = Buffer.from(token);
       for (const week of await listWeekIds()) {
-        const w = await load(week);
+        const w = await safeLoad(week);
         if (!w || !w.tokens || w.tokensRevoked || w.status === 'collecting') continue;
         for (const voter of VOTERS) {
           const c = Buffer.from(w.tokens[voter]);
@@ -345,10 +383,12 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     async voterState(week, voter) {
       checkWeek(week);
       checkVoter(voter);
-      return withLock(week, async () => view(await mustLoad(week), voter));
+      return withLock(week, async () => view(await loadLive(week), voter));
     },
 
-    pick(week, voter, matchId, winnerId) {
+    async pick(week, voter, matchId, winnerId) {
+      if (typeof matchId !== 'string') throw new StoreError('invalid', 'matchId must be a string');
+      checkId(winnerId);
       return voteOp(week, voter, (w) => {
         if (w.status !== 'voting' || w.jointFinal) throw new MatchError('voting closed');
         w.voters[voter] = applyPick(w.voters[voter], matchId, winnerId);
@@ -356,7 +396,8 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     },
 
     // matchId: the match the client currently shows (null when its bracket is finished).
-    undo(week, voter, matchId) {
+    async undo(week, voter, matchId) {
+      if (matchId != null && typeof matchId !== 'string') throw new StoreError('invalid', 'matchId must be a string or null');
       return voteOp(week, voter, (w) => {
         if (w.status !== 'voting' || w.jointFinal) throw new MatchError('voting closed');
         const b = w.voters[voter];
@@ -368,7 +409,8 @@ export function createStore(rootDir, { rng = Math.random, now = Date.now } = {})
     },
 
     // First valid pick of the pending pair wins; returns the given voter's view.
-    jointPick(week, winnerId, voter = 'me') {
+    async jointPick(week, winnerId, voter = 'me') {
+      checkId(winnerId);
       return voteOp(week, voter, (w) => {
         if (w.status !== 'voting' || !w.jointFinal) throw new MatchError('no joint final pending');
         if (!w.jointFinal.includes(winnerId)) throw new MatchError(`invalid winner: ${winnerId}`);

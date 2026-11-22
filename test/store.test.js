@@ -316,7 +316,7 @@ test('finalize resume: copies the rest under the same names without overwriting'
   await writeFile(join(sel, `${WEEK}_1.jpg`), 'pre-existing');
 
   const store2 = createStore(root);
-  assert.equal((await store2.voterState(WEEK, 'me')).status, 'finalizing');
+  assert.equal((await store2.listWeeks())[0].status, 'finalizing'); // listWeeks does not retry
   await store2.resumeFinalize();
   assert.deepEqual((await readdir(sel)).sort(), [`${WEEK}_1.jpg`, `${WEEK}_2.jpg`, `${WEEK}_3.jpg`]);
   assert.equal(await readFile(join(sel, `${WEEK}_1.jpg`), 'utf8'), 'pre-existing');
@@ -353,4 +353,51 @@ test('voterState shape before voting is a state error; now is injectable', async
   assert.equal(data.createdAt, 1234);
   assert.equal(data.photos[0].addedAt, 1234);
   assert.equal(currentMatch({ order: [], picks: [] }), null);
+});
+
+test('finalize copy failure: pick still resolves (finalizing), next voterState retries to done', async (t) => {
+  const root = await tempRoot(t);
+  const { copyFile } = await import('node:fs/promises');
+  let fail = 1;
+  const logs = [];
+  const flaky = async (from, to) => {
+    if (fail-- > 0) throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+    return copyFile(from, to);
+  };
+  const store = createStore(root, { rng: seeded(11), copyFile: flaky, log: (m) => logs.push(m) });
+  const ids = await addPhotos(store, 3);
+  await store.startVoting(WEEK);
+  await playAll(store, 'me', byList(ids));
+  const v = await playAll(store, 'wife', byList(ids));
+  assert.equal(v.status, 'finalizing');
+  assert.ok(v.result.files.length >= 1);
+  assert.equal(logs.length, 1);
+  const again = await store.voterState(WEEK, 'me');
+  assert.equal(again.status, 'done');
+  assert.deepEqual((await readdir(join(root, 'selected'))).sort(), again.result.files.slice().sort());
+});
+
+test('minor validation: winner/match ids type-checked; addPhoto cleans up on save failure; corrupt JSON skipped', async (t) => {
+  const root = await tempRoot(t);
+  const logs = [];
+  const store = createStore(root, { rng: seeded(12), log: (m) => logs.push(m) });
+  const ids = await addPhotos(store, 2);
+  await store.startVoting(WEEK);
+  const m = (await store.voterState(WEEK, 'me')).match;
+  await assert.rejects(store.pick(WEEK, 'me', m.id, '../x'), (e) => e instanceof StoreError && e.code === 'invalid');
+  await assert.rejects(store.pick(WEEK, 'me', 42, ids[0]), (e) => e instanceof StoreError && e.code === 'invalid');
+  await assert.rejects(store.undo(WEEK, 'me', {}), (e) => e instanceof StoreError && e.code === 'invalid');
+  await assert.rejects(store.jointPick(WEEK, '../x'), (e) => e instanceof StoreError && e.code === 'invalid');
+
+  // Save failure: 'data' is a plain file, so mkdir data/weeks fails after the pool files are written.
+  const root2 = await tempRoot(t);
+  await writeFile(join(root2, 'data'), 'blocker');
+  await assert.rejects(createStore(root2).addPhoto(WEEK, photoInput(1)));
+  assert.deepEqual(await readdir(join(root2, 'pool', WEEK)), []);
+
+  await writeFile(join(root, 'data', 'weeks', '2026-W49.json'), '{not json');
+  const weeks = await store.listWeeks();
+  assert.deepEqual(weeks.map((w) => w.week), [WEEK]);
+  assert.equal(await store.findByToken('x'.repeat(32)), null);
+  assert.ok(logs.some((l) => l.includes('2026-W49')));
 });
