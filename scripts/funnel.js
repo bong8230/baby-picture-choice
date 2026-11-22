@@ -5,23 +5,23 @@ const PORT = '10000';
 const TARGET = 'http://127.0.0.1:8790';
 const mode = process.argv[2];
 
-function ts(args, { allowFail = false } = {}) {
+// Run tailscale; returns { ok, out }. Never exits, so the guard can still run after a failure.
+function ts(args) {
   try {
-    return execFileSync('tailscale', args, { encoding: 'utf8', shell: false });
+    return { ok: true, out: execFileSync('tailscale', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
   } catch (e) {
-    if (allowFail) return '';
     console.error(`tailscale ${args.join(' ')} failed:\n${e.stderr || e.message}`);
-    process.exit(1);
+    return { ok: false, out: '' };
   }
 }
 
 function serveStatus() {
-  const out = ts(['serve', 'status', '--json']).trim();
-  return out ? JSON.parse(out) : {};
-}
-
-function funnelStatus() {
-  const out = ts(['funnel', 'status', '--json'], { allowFail: true }).trim();
+  const r = ts(['serve', 'status', '--json']);
+  if (!r.ok) {
+    console.error('cannot read serve status; aborting');
+    process.exit(1);
+  }
+  const out = r.out.trim();
   return out ? JSON.parse(out) : {};
 }
 
@@ -57,21 +57,42 @@ if (!['on', 'off', 'status'].includes(mode)) {
 }
 
 const before = serveStatus();
+let commandsOk = true;
 
 if (mode === 'on') {
-  ts(['funnel', '--bg', `--https=${PORT}`, TARGET]);
+  commandsOk = ts(['funnel', '--bg', `--https=${PORT}`, TARGET]).ok;
 } else if (mode === 'off') {
-  ts(['funnel', `--https=${PORT}`, 'off'], { allowFail: true });
-  ts(['serve', '--bg', `--https=${PORT}`, TARGET]);
+  // Failure is expected when funnel is not on; only a problem if the final state says so.
+  const offOk = ts(['funnel', `--https=${PORT}`, 'off']).ok;
+  const serveOk = ts(['serve', '--bg', `--https=${PORT}`, TARGET]).ok;
+  commandsOk = serveOk;
+  if (!offOk && state10000(before) === 'funnel') {
+    // Funnel was on and turning it off failed: retry once.
+    console.error('funnel off failed while funnel was ON; retrying once');
+    ts(['funnel', `--https=${PORT}`, 'off']);
+    ts(['serve', '--bg', `--https=${PORT}`, TARGET]);
+  }
 }
 
 const after = serveStatus();
+let failed = !commandsOk;
 
 if (!isDeepStrictEqual(others(before), others(after))) {
+  failed = true;
   console.error('!!!!!!!! WARNING: serve config on ports other than 10000 CHANGED !!!!!!!!');
   console.error('before:', JSON.stringify(others(before), null, 2));
   console.error('after: ', JSON.stringify(others(after), null, 2));
-  process.exit(1);
+  console.error('Restore manually: 443 -> http://127.0.0.1:18951 and 8443 -> http://127.0.0.1:8787.');
+  console.error('NEVER run `tailscale serve reset`.');
 }
 
-console.log(`port ${PORT}: ${state10000(after)}`);
+const state = state10000(after);
+console.log(`port ${PORT}: ${state}`);
+
+const expected = { on: 'funnel', off: 'tailnet' }[mode];
+if (expected && state !== expected) {
+  failed = true;
+  console.error(`!!!!!!!! ERROR: expected port ${PORT} to be '${expected}' but it is '${state}' !!!!!!!!`);
+}
+
+process.exit(failed ? 1 : 0);
