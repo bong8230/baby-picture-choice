@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>사진 분석 기기 테스트</title>
+  <style>
+    body { margin: 1.25rem auto; padding: 0 1rem; max-width: 44rem; font: 1rem/1.5 system-ui, sans-serif; }
+    input { margin-block: .5rem; max-width: 100%; }
+    pre { padding: .75rem; background: #f3f4f6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>사진 분석 기기 테스트</h1>
+  <label for="photos">테스트할 사진 선택</label>
+  <input id="photos" type="file" accept="image/*" multiple>
+  <p id="status" role="status"></p>
+  <pre id="output" hidden></pre>
+  <script type="module">
+    import { analyzeDay, preloadModels } from './analyze.js';
+
+    const input = document.querySelector('#photos');
+    const status = document.querySelector('#status');
+    const output = document.querySelector('#output');
+
+    input.addEventListener('change', async () => {
+      const files = [...input.files];
+      if (!files.length) return;
+
+      input.disabled = true;
+      output.hidden = true;
+      status.textContent = '얼굴 모델 준비 중';
+
+      try {
+        const modelReady = await preloadModels().then(() => true, () => false);
+        const start = performance.now();
+        const result = await analyzeDay(files, {
+          onProgress({ done, total }) {
+            status.textContent = `사진 분석 중 ${done}/${total}`;
+          },
+        });
+        const elapsedSeconds = Number(((performance.now() - start) / 1000).toFixed(2));
+        const json = JSON.stringify(
+          { elapsedSeconds, modelReadyBeforeTiming: modelReady, ...result },
+          (_key, value) => value instanceof File ? value.name : value,
+          2,
+        );
+        output.textContent = json;
+        output.hidden = false;
+        status.textContent = `${files.length}장 분석 완료 (${elapsedSeconds}초)`;
+      } catch (error) {
+        status.textContent = `분석 실패 (${error.message})`;
+      } finally {
+        input.value = '';
+        input.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
