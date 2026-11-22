@@ -266,3 +266,50 @@
   - `npm test`가 전부 통과해야 한다.
   - `done` 주의 아내 링크를 `funnel:off` → `funnel:on` 뒤에 데이터망에서 열면 404여야 한다.
 - [ ] **Step 4:** 커밋 `feat: revoke finished vote links on funnel off`
+
+---
+
+## Addendum 2026-11-24: HEIC 지원
+
+Spec: 위 스펙의 "개정 2026-11-24: HEIC 지원" 절.
+
+### Task 9: 브라우저 HEIC 디코딩 + 원본 해상도 JPG 변환
+
+**Files:**
+- Create: `public/vendor/libheif/**` (libheif-js wasm 번들 고정 버전, README.txt에 버전·출처·SHA-256)
+- Create: `public/decode.js`
+- Modify: `public/analyze.js` (디코딩을 `decode.js` 경유로), `public/admin.js` (썸네일 생성이 `decode.js` 경유)
+- Test: `test/decode.pure.test.js`
+
+**Interfaces:**
+- Produces:
+  ```js
+  export function isHeic(file: File): boolean      // type image/heic|heif 또는 확장자 .heic/.heif (대소문자 무시)
+  export async function decodeToBitmap(file: File, opts?: {resizeWidth?, resizeHeight?}): Promise<ImageBitmap | {width,height,draw(ctx,dw,dh)}>
+  export async function toFullJpeg(file: File): Promise<Blob | null>   // HEIC면 원본 해상도 JPEG 0.95, 아니면 null
+  ```
+  HEIC가 아니면 `createImageBitmap(file, {imageOrientation:'from-image'})`를 그대로 쓴다. HEIC면 libheif로 디코딩한다(회전/미러 변환 적용). 디코딩 실패 시 throw → 호출자가 'unsupported' 처리.
+
+- [ ] **Step 1:** 테스트: `isHeic`이 `a.HEIC`, `b.heif`, type `image/heic`에 true, `c.jpg`에 false. libheif 로더가 `import.meta.url` 기준 로컬 경로만 쓰고 http(s) URL을 쓰지 않음(소스 문자열 검사).
+- [ ] **Step 2:** 실패 확인 → 구현 → 통과. `npm test` 전체 통과.
+- [ ] **Step 3:** 커밋 `feat: decode HEIC in browser and make full-size JPEG`
+
+### Task 10: HEIC 업로드·보관·최종 JPG 저장
+
+**Files:**
+- Modify: `src/routes.js` (업로드 형식), `src/store.js` (`addPhoto`에 `fullJpeg?: Buffer`, finalize), `public/admin.js` (업로드 시 `toFullJpeg` 결과 첨부)
+- Test: `test/store.test.js`, `test/server.test.js`
+
+**Interfaces:**
+- Consumes: Task 9 `isHeic`, `toFullJpeg`
+- Produces: 업로드 헤더 `X-Full-Length`(선택). body = 썸네일 + 원본 + (있으면) full JPEG. `addPhoto(week, {..., fullJpeg?})`는 `pool/<주차>/<id>.full.jpg`를 쓴다.
+  finalize: `ext`가 heic/heif이면 `.full.jpg`를 `selected/<주차>_<순위>.jpg`로 복사한다. 그 외에는 원본 바이트를 그대로 복사하고 확장자는 `jpg`/`jpeg` → `.jpg`로 쓴다(png/webp는 원래 확장자 유지).
+
+- [ ] **Step 1:** 테스트:
+  - HEIC + fullJpeg 업로드 → finalize 후 `selected/<주차>_1.jpg` 바이트 == fullJpeg.
+  - JPG 원본은 바이트 그대로이고 이름은 `.jpg`.
+  - HEIC인데 fullJpeg 없음 → 업로드 400.
+  - `X-Full-Length` 범위 검증(음수, 비정수, 합계 초과 → 400).
+  - 50MB 상한은 장당 합계 기준.
+- [ ] **Step 2:** 실패 확인 → 구현 → 통과. `npm test` 전체 통과.
+- [ ] **Step 3:** 커밋 `feat: store HEIC originals and save JPEG for album`
