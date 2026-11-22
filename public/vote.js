@@ -4,6 +4,8 @@ const app = document.getElementById('app');
 const banner = document.getElementById('banner');
 const bannerText = document.getElementById('banner-text');
 const NAMES = { me: '남편', wife: '아내' };
+const PARTICLE = { me: { sub: '이', top: '은' }, wife: { sub: '가', top: '는' } };
+let gen = 0;
 
 let view = null;
 let lastKey = '';
@@ -52,7 +54,7 @@ async function api(path, body) {
 
 function schedule() {
   clearTimeout(timer);
-  if (!view) return;
+  if (!view) { timer = setTimeout(refresh, 3000); return; }
   let ms = 0;
   if (view.status === 'finalizing') ms = 2000;
   else if (view.jointFinal || (!view.match && !view.result)) ms = 5000;
@@ -62,8 +64,10 @@ function schedule() {
 
 async function refresh() {
   if (busy) { schedule(); return; }
+  const g = gen;
   try {
     const v = await api('state');
+    if (g !== gen || busy) { schedule(); return; }
     hideBanner();
     apply(v);
   } catch (e) {
@@ -76,17 +80,21 @@ async function refresh() {
 async function act(path, body) {
   if (busy) return;
   busy = true;
+  gen++;
   clearTimeout(timer);
   try {
     const v = await api(path, body);
     hideBanner();
     busy = false;
+    gen++;
     apply(v, true);
   } catch (e) {
     busy = false;
+    gen++;
     if (e instanceof Expired) return expired();
     showBanner('전송하지 못했어요. 다시 눌러 주세요', refresh);
     render(true);
+    schedule();
   }
 }
 
@@ -94,7 +102,15 @@ function apply(v, force) {
   const key = JSON.stringify(v);
   const changed = key !== lastKey;
   lastKey = key;
+  const prev = view;
   view = v;
+  if (changed && !force && revealing && step === 3 && prev && prev.result && v.result && !v.jointFinal
+      && JSON.stringify(prev.result) === JSON.stringify(v.result)) {
+    const n = app.querySelector('.saved-note');
+    if (n) n.textContent = v.status === 'done' ? '✔ PC에 저장됨' : '저장하는 중이에요…';
+    schedule();
+    return;
+  }
   if (changed || force) render(force || changed);
   schedule();
 }
@@ -146,13 +162,14 @@ function renderMatch(v) {
 }
 
 function renderWaiting(v) {
-  const other = NAMES[v.voter === 'me' ? 'wife' : 'me'];
+  const otherKey = v.voter === 'me' ? 'wife' : 'me';
+  const other = NAMES[otherKey];
   const done = v.myRanks != null;
   const undo = el('button', { class: 'ghost', type: 'button', text: '마지막 선택 되돌리기', disabled: !v.canUndo });
   undo.addEventListener('click', () => { undo.disabled = true; act('undo', { matchId: null }); });
   app.replaceChildren(el('div', { class: 'screen' }, el('div', { class: 'center' },
     el('div', { class: 'pulse' }),
-    el('h1', { text: v.otherDone ? '잠시만요, 결과를 모으는 중' : `${other}이 투표 중이에요` }),
+    el('h1', { text: v.otherDone ? '잠시만요, 결과를 모으는 중' : `${other}${PARTICLE[otherKey].sub} 투표 중이에요` }),
     el('p', { text: done ? '내 선택은 끝났어요. 상대의 선택은 모두 끝나면 함께 공개돼요.' : '잠시 후 다시 확인해요.' }),
     v.canUndo ? undo : null)));
 }
@@ -197,7 +214,7 @@ function renderReveal(v) {
     mine.forEach((id, i) => stage.append(card(id, i, i + 1)));
   } else if (step === 1) {
     title = `${NAMES[other]}의 1~3위`;
-    sub = `${NAMES[other]}은 이렇게 골랐어요`;
+    sub = `${NAMES[other]}${PARTICLE[other].top} 이렇게 골랐어요`;
     theirs.forEach((id, i) => stage.append(card(id, i, i + 1)));
   } else if (step === 2) {
     title = '둘 다 고른 사진';
