@@ -1,5 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createStore } from '../src/store.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const PORT = '10000';
 const TARGET = 'http://127.0.0.1:8790';
@@ -95,4 +100,16 @@ if (expected && state !== expected) {
   console.error(`!!!!!!!! ERROR: expected port ${PORT} to be '${expected}' but it is '${state}' !!!!!!!!`);
 }
 
-process.exit(failed ? 1 : 0);
+// Off: revoke finished vote links. Runs even if the funnel step failed (revoking is always safe).
+let revokeFailed = false;
+if (mode === 'off') {
+  try {
+    const n = await createStore(ROOT).revokeDoneTokens();
+    console.log(`revoked ${n} finished vote link(s)`);
+  } catch (e) {
+    console.error(`!!!!!!!! ERROR: revoking finished vote links failed: ${e.message} !!!!!!!!`);
+    revokeFailed = true;
+  }
+}
+
+process.exit(failed || revokeFailed ? 1 : 0);
