@@ -401,3 +401,76 @@ test('minor validation: winner/match ids type-checked; addPhoto cleans up on sav
   assert.equal(await store.findByToken('x'.repeat(32)), null);
   assert.ok(logs.some((l) => l.includes('2026-W49')));
 });
+
+async function finishWeek(store, ids) {
+  await store.startVoting(WEEK);
+  await playAll(store, 'me', byList(ids));
+  return playAll(store, 'wife', byList(ids));
+}
+
+test('HEIC photo: full.jpg stored, finalize copies it as .jpg; jpeg->.jpg; png keeps ext; originals untouched', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root, { rng: seeded(3) });
+  const full = Buffer.from([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]);
+  const heic = { ...photoInput(0, 'heic'), fullJpeg: full };
+  const a = (await store.addPhoto(WEEK, heic)).id;
+  const b = (await store.addPhoto(WEEK, photoInput(1, 'jpeg'))).id;
+  const c = (await store.addPhoto(WEEK, photoInput(2, 'png'))).id;
+  assert.ok((await readFile(join(root, 'pool', WEEK, `${a}.full.jpg`))).equals(full));
+  const data = JSON.parse(await readFile(join(root, 'data', 'weeks', `${WEEK}.json`), 'utf8'));
+  assert.equal(data.photos[0].hasFullJpeg, true);
+  assert.equal(data.photos[1].hasFullJpeg, false);
+  const v = await finishWeek(store, [a, b, c]);
+  assert.equal(v.status, 'done');
+  const want = { [a]: ['jpg', full], [b]: ['jpg', photoInput(1).bytes], [c]: ['png', photoInput(2).bytes] };
+  assert.equal(v.result.saved.length, 3);
+  for (const [i, id] of v.result.saved.entries()) {
+    const [ext, expected] = want[id];
+    assert.equal(v.result.files[i], `${WEEK}_${i + 1}.${ext}`);
+    assert.ok((await readFile(join(root, 'selected', v.result.files[i]))).equals(expected));
+  }
+  assert.ok((await readFile(join(root, 'pool', WEEK, `${a}.heic`))).equals(photoInput(0).bytes));
+});
+
+test('addPhoto: HEIC needs fullJpeg, others reject it, failure cleans full.jpg, remove deletes it', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root);
+  await assert.rejects(store.addPhoto(WEEK, photoInput(0, 'heic')), (e) => e.code === 'invalid');
+  await assert.rejects(store.addPhoto(WEEK, photoInput(0, 'heif')), (e) => e.code === 'invalid');
+  await assert.rejects(store.addPhoto(WEEK, { ...photoInput(0, 'heic'), fullJpeg: Buffer.alloc(0) }), (e) => e.code === 'invalid');
+  await assert.rejects(store.addPhoto(WEEK, { ...photoInput(0, 'jpg'), fullJpeg: Buffer.from('x') }), (e) => e.code === 'invalid');
+  const id = (await store.addPhoto(WEEK, { ...photoInput(1, 'heif'), fullJpeg: Buffer.from('jpg') })).id;
+  const dir = join(root, 'pool', WEEK);
+  assert.equal((await readdir(dir)).length, 3);
+  await store.removePhoto(WEEK, id);
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test('finalize resume: old-format record (no src) still copies the original; recorded src is reused', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root, { rng: seeded(9) });
+  const ids = await addPhotos(store, 2);
+  await finishWeek(store, ids);
+  const jsonPath = join(root, 'data', 'weeks', `${WEEK}.json`);
+  const data = JSON.parse(await readFile(jsonPath, 'utf8'));
+  assert.ok(data.final.files.every((f) => typeof f.src === 'string'));
+  for (const f of data.final.files) delete f.src; // old record format
+  data.status = 'finalizing';
+  await writeFile(jsonPath, JSON.stringify(data));
+  const sel = join(root, 'selected');
+  const name = data.final.files[0].name;
+  await unlink(join(sel, name));
+  const store2 = createStore(root);
+  await store2.resumeFinalize();
+  const src = photoInput(ids.indexOf(data.final.files[0].id)).bytes;
+  assert.ok((await readFile(join(sel, name))).equals(src));
+  assert.equal(JSON.parse(await readFile(jsonPath, 'utf8')).status, 'done');
+});
+
+test('addPhoto with fullJpeg removes full.jpg too when saving the week fails', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root);
+  await writeFile(join(root, 'data'), 'blocker'); // mkdir data/weeks fails after pool files are written
+  await assert.rejects(store.addPhoto(WEEK, { ...photoInput(0, 'heic'), fullJpeg: Buffer.from('j') }));
+  assert.deepEqual(await readdir(join(root, 'pool', WEEK)), []);
+});

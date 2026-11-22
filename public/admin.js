@@ -1,5 +1,5 @@
 import { analyzeDay, preloadModels } from './analyze.js';
-import { decodeToBitmap } from './decode.js';
+import { decodeToBitmap, isHeic as isHeicFile, toFullJpeg } from './decode.js';
 import { isoWeek } from './week.js';
 import { parse } from './vendor/exifr/lite.esm.mjs';
 
@@ -240,7 +240,8 @@ async function makeThumbnail(file) {
   }
 }
 
-async function uploadPhoto(week, entry) {
+// Body = thumb + original (+ full JPEG for HEIC); X-Full-Length is sent only when there is one.
+async function uploadPhoto(week, entry, fullJpeg = null) {
   const thumb = await makeThumbnail(entry.original);
   const params = new URLSearchParams({
     ext: entry.ext,
@@ -250,8 +251,12 @@ async function uploadPhoto(week, entry) {
   });
   const response = await request(`${weekPath(week)}/photos?${params}`, {
     method: 'POST',
-    headers: { 'X-Thumb-Length': String(thumb.size), 'Content-Type': 'application/octet-stream' },
-    body: new Blob([thumb, entry.original], { type: 'application/octet-stream' }),
+    headers: {
+      'X-Thumb-Length': String(thumb.size),
+      ...(fullJpeg ? { 'X-Full-Length': String(fullJpeg.size) } : {}),
+      'Content-Type': 'application/octet-stream',
+    },
+    body: new Blob(fullJpeg ? [thumb, entry.original, fullJpeg] : [thumb, entry.original], { type: 'application/octet-stream' }),
   });
   const { id } = await response.json();
   entry.id = id;
@@ -264,16 +269,33 @@ async function applyDraft(week, draft) {
   if (deletions.length && !window.confirm(`PC에 저장된 후보 ${deletions.length}장을 삭제하고 이 목록을 올릴까요?`)) return;
 
   await run(async () => {
+    const skipped = [];
     try {
       const pending = included.filter((entry) => !entry.id);
+      const heicCount = pending.filter((entry) => isHeicFile(entry.original)).length;
+      let heicDone = 0;
       for (const [index, entry] of pending.entries()) {
+        let fullJpeg = null;
+        if (isHeicFile(entry.original)) {
+          progress.textContent = `${week} JPG 변환 중 ${++heicDone}/${heicCount}`;
+          try {
+            fullJpeg = await toFullJpeg(entry.original);
+          } catch (error) {
+            skipped.push(`${entry.name} · ${error.message} 이 사진은 올리지 않았어요.`);
+            continue;
+          }
+          if (!fullJpeg) {
+            skipped.push(`${entry.name} · JPG로 변환하지 못했어요. 이 사진은 올리지 않았어요.`);
+            continue;
+          }
+        }
         progress.textContent = `${week} 올리는 중 ${index + 1}/${pending.length}`;
-        await uploadPhoto(week, entry);
+        await uploadPhoto(week, entry, fullJpeg);
       }
 
       progress.textContent = `${week} 점수 저장 중`;
       const scores = Object.fromEntries(included.flatMap(({ id, score, previousScore }) =>
-        Number.isFinite(score ?? previousScore) ? [[id, score ?? previousScore]] : []));
+        id && Number.isFinite(score ?? previousScore) ? [[id, score ?? previousScore]] : []));
       if (Object.keys(scores).length) {
         await request(`${weekPath(week)}/scores`, {
           method: 'PUT',
@@ -289,6 +311,11 @@ async function applyDraft(week, draft) {
     } catch (error) {
       await refreshWeeks().catch(() => {});
       throw new Error(`${week} · ${error.message} 완료된 작업은 PC에 반영됐습니다.`);
+    }
+    if (skipped.length) {
+      await refreshWeeks();
+      notice.textContent = `${week} 후보 ${included.length - skipped.length}장을 저장했고 ${skipped.length}장은 건너뛰었어요.\n${skipped.join('\n')}`;
+      return;
     }
     removeDraft(week);
     await refreshWeeks();

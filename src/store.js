@@ -3,8 +3,9 @@
 // Disk layout under rootDir:
 //   pool/<week>/<id>.<ext>        original bytes, exactly as received
 //   pool/<week>/<id>.thumb.jpg    thumbnail
+//   pool/<week>/<id>.full.jpg     full-size JPEG of a HEIC/HEIF original (made on the phone)
 //   data/weeks/<week>.json        week state (written to .tmp then renamed)
-//   selected/<week>_<rank>.<ext>  final copies
+//   selected/<week>_<rank>.<ext>  final copies (HEIC/HEIF -> the full JPEG as .jpg; jpeg -> .jpg)
 //
 // Every read-validate-modify-write of a week runs inside a per-week promise-chain lock.
 // Status flow: collecting -> voting -> (voting + jointFinal pending) -> finalizing -> done.
@@ -32,6 +33,7 @@ const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']);
 const VOTERS = ['me', 'wife'];
 const OTHER = { me: 'wife', wife: 'me' };
+const isHeicExt = (e) => e === 'heic' || e === 'heif';
 
 function checkWeek(week) {
   if (typeof week !== 'string' || !WEEK_RE.test(week)) throw new StoreError('invalid', `bad week: ${week}`);
@@ -164,10 +166,22 @@ export function createStore(rootDir, {
     return true;
   }
 
+  // Each file records its source (name inside pool/<week>/) and final name at this step, so a
+  // resume reuses them. Records without `src` (older format) copy the original file.
+  function planFile(w, id, rank) {
+    const p = findPhoto(w, id);
+    if (isHeicExt(p.ext)) {
+      if (!p.hasFullJpeg) throw new StoreError('state', `photo ${id} has no full JPEG`);
+      return { id, name: `${w.week}_${rank}.jpg`, src: `${id}.full.jpg` };
+    }
+    const outExt = p.ext === 'jpeg' ? 'jpg' : p.ext;
+    return { id, name: `${w.week}_${rank}.${outExt}`, src: `${id}.${p.ext}` };
+  }
+
   function beginFinalize(w, me, wife, saved, joint) {
     w.final = {
       me, wife, saved, joint,
-      files: saved.map((id, i) => ({ id, name: `${w.week}_${i + 1}.${findPhoto(w, id).ext}` })),
+      files: saved.map((id, i) => planFile(w, id, i + 1)),
     };
     w.jointFinal = null;
     w.status = 'finalizing';
@@ -184,7 +198,7 @@ export function createStore(rootDir, {
       const p = findPhoto(w, f.id);
       const tmp = join(selectedDir, `.${f.name}.${randomBytes(4).toString('hex')}.tmp`);
       try {
-        await copy(join(poolDir, w.week, `${p.id}.${p.ext}`), tmp);
+        await copy(join(poolDir, w.week, f.src ?? `${p.id}.${p.ext}`), tmp);
         if (await exists(dest)) continue; // appeared meanwhile: keep it
         await renameRetry(tmp, dest);
       } finally {
@@ -283,11 +297,15 @@ export function createStore(rootDir, {
       return out;
     },
 
-    async addPhoto(week, { bytes, ext, originalName, takenAt = null, score = null, thumb } = {}) {
+    async addPhoto(week, { bytes, ext, originalName, takenAt = null, score = null, thumb, fullJpeg } = {}) {
       checkWeek(week);
       const e = normExt(ext);
       if (!Buffer.isBuffer(bytes) || !bytes.length) throw new StoreError('invalid', 'bytes must be a non-empty Buffer');
       if (!Buffer.isBuffer(thumb) || !thumb.length) throw new StoreError('invalid', 'thumb must be a non-empty Buffer');
+      const hasFull = fullJpeg !== undefined && fullJpeg !== null;
+      if (hasFull && (!Buffer.isBuffer(fullJpeg) || !fullJpeg.length)) throw new StoreError('invalid', 'fullJpeg must be a non-empty Buffer');
+      if (isHeicExt(e) && !hasFull) throw new StoreError('invalid', 'HEIC/HEIF needs fullJpeg');
+      if (!isHeicExt(e) && hasFull) throw new StoreError('invalid', 'fullJpeg only for HEIC/HEIF');
       if (score !== null && !Number.isFinite(score)) throw new StoreError('invalid', 'bad score');
       if (takenAt !== null && typeof takenAt !== 'number' && typeof takenAt !== 'string') {
         throw new StoreError('invalid', 'bad takenAt');
@@ -303,10 +321,12 @@ export function createStore(rootDir, {
         const dir = join(poolDir, week);
         await mkdir(dir, { recursive: true });
         const files = [join(dir, `${id}.${e}`), join(dir, `${id}.thumb.jpg`)];
+        if (hasFull) files.push(join(dir, `${id}.full.jpg`));
         try {
           await atomicWrite(files[0], bytes);
           await atomicWrite(files[1], thumb);
-          w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt: now() });
+          if (hasFull) await atomicWrite(files[2], fullJpeg);
+          w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt: now(), hasFullJpeg: hasFull });
           await save(w);
         } catch (err) {
           for (const f of files) await unlink(f).catch(() => {});
@@ -325,7 +345,7 @@ export function createStore(rootDir, {
         const p = findPhoto(w, id);
         w.photos = w.photos.filter((x) => x.id !== id);
         await save(w);
-        for (const f of [`${id}.${p.ext}`, `${id}.thumb.jpg`]) {
+        for (const f of [`${id}.${p.ext}`, `${id}.thumb.jpg`, `${id}.full.jpg`]) {
           await unlink(join(poolDir, week, f)).catch((e) => { if (e.code !== 'ENOENT') throw e; });
         }
       });

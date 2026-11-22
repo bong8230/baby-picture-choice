@@ -371,3 +371,37 @@ test('admin links endpoint: returns start links, 404 for funnel / non-admin / re
   await store.revokeDoneTokens();
   assert.equal((await req(port, 'GET', `/api/admin/weeks/${done}/links`, { headers: ADMIN_H })).status, 404);
 });
+
+test('HEIC upload: thumb + original + full JPEG; length headers validated; cap covers original + full', async (t) => {
+  const { port, root } = await setup(t, { server: { maxPhotoBytes: 100 } });
+  const { readFile, readdir } = await import('node:fs/promises');
+  const thumb = Buffer.from('THUMB');
+  const orig = Buffer.from('HEICBYTES');
+  const full = Buffer.from([0xff, 0xd8, 9, 9, 0xff, 0xd9]);
+  const up = (q, body, extra = {}) => req(port, 'POST', `/api/admin/weeks/${WEEK}/photos?${q}`, {
+    headers: { ...ADMIN_H, 'x-thumb-length': String(thumb.length), ...extra }, body,
+  });
+  const all = Buffer.concat([thumb, orig, full]);
+  const ok = await up('ext=heic&name=a.heic', all, { 'x-full-length': String(full.length) });
+  assert.equal(ok.status, 200);
+  const dir = join(root, 'pool', WEEK);
+  assert.ok((await readFile(join(dir, `${ok.json.id}.heic`))).equals(orig));
+  assert.ok((await readFile(join(dir, `${ok.json.id}.full.jpg`))).equals(full));
+  const before = (await readdir(dir)).length;
+  // HEIC without a full JPEG
+  assert.equal((await up('ext=heic', Buffer.concat([thumb, orig]))).status, 400);
+  assert.equal((await up('ext=heif', Buffer.concat([thumb, orig]), { 'x-full-length': '0' })).status, 400);
+  // non-HEIC with a full JPEG
+  assert.equal((await up('ext=jpg', all, { 'x-full-length': String(full.length) })).status, 400);
+  // bad X-Full-Length
+  for (const v of ['-1', '1.5', 'abc', '', '01', String(all.length), String(all.length - thumb.length)]) {
+    assert.equal((await up('ext=heic', all, { 'x-full-length': v })).status, 400, `full=${v}`);
+  }
+  assert.equal((await readdir(dir)).length, before);
+  // cap: original + full > maxPhotoBytes -> 413
+  const big = Buffer.concat([thumb, Buffer.alloc(60, 1), Buffer.alloc(60, 2)]);
+  assert.equal((await up('ext=heic', big, { 'x-full-length': '60' })).status, 413);
+  // each alone under the cap but sum over
+  const small = Buffer.concat([thumb, Buffer.alloc(60, 1)]);
+  assert.equal((await up('ext=jpg', small)).status, 200);
+});

@@ -247,19 +247,27 @@ export function createServer({
     return n;
   }
 
+  // Body = thumb + original + optional full JPEG (HEIC/HEIF only). X-Thumb-Length and the
+  // optional X-Full-Length are non-negative integers; original must be non-empty.
   async function upload(req, res, week, query) {
     const tl = req.headers['x-thumb-length'];
     if (typeof tl !== 'string' || !/^[1-9]\d*$/.test(tl)) throw new HttpError(400, 'bad X-Thumb-Length');
     const thumbLen = Number(tl);
     if (thumbLen > maxThumbBytes) throw new HttpError(413);
+    const fl = req.headers['x-full-length'];
+    if (fl !== undefined && (typeof fl !== 'string' || !/^(0|[1-9]\d*)$/.test(fl))) throw new HttpError(400, 'bad X-Full-Length');
+    const fullLen = fl === undefined ? 0 : Number(fl);
+    if (!Number.isSafeInteger(fullLen)) throw new HttpError(400, 'bad X-Full-Length');
     const body = await readBody(req, maxThumbBytes + maxPhotoBytes);
-    if (thumbLen >= body.length) throw new HttpError(400, 'bad X-Thumb-Length');
+    if (thumbLen + fullLen >= body.length) throw new HttpError(400, 'bad lengths');
     if (body.length - thumbLen > maxPhotoBytes) throw new HttpError(413);
+    const origEnd = body.length - fullLen;
     const takenRaw = query.get('takenAt');
     const takenAt = takenRaw === null || takenRaw === '' ? null : (/^-?\d+(\.\d+)?$/.test(takenRaw) ? Number(takenRaw) : takenRaw);
     const { id } = await store.addPhoto(week, {
       thumb: body.subarray(0, thumbLen),
-      bytes: body.subarray(thumbLen),
+      bytes: body.subarray(thumbLen, origEnd),
+      fullJpeg: fullLen > 0 ? body.subarray(origEnd) : undefined,
       ext: query.get('ext') ?? '',
       originalName: query.get('name') ?? '',
       takenAt,
