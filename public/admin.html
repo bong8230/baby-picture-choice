@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>아기 사진 투표 관리</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/admin.js"></script>
+</head>
+<body class="admin">
+  <main class="admin-shell">
+    <header class="admin-heading">
+      <h1>아기 사진 투표 관리</h1>
+      <button id="refresh" type="button" class="secondary">새로고침</button>
+    </header>
+    <p id="funnel" class="funnel-state">Funnel 상태 확인 중</p>
+
+    <section class="admin-panel" aria-labelledby="upload-title">
+      <h2 id="upload-title">사진 올리기</h2>
+      <p>주차별 후보는 8~16장을 권장합니다.</p>
+      <label class="file-picker">
+        <input id="photo-input" type="file" accept="image/*" multiple disabled>
+        <span>사진 선택</span>
+      </label>
+      <p id="progress" role="status"></p>
+      <p id="notice" role="status"></p>
+      <div id="drafts"></div>
+    </section>
+
+    <section class="admin-panel" aria-labelledby="week-title">
+      <h2 id="week-title">주차별 투표</h2>
+      <div id="weeks"><p>주차 목록을 불러오는 중입니다.</p></div>
+    </section>
+  </main>
+</body>
+</html>
