@@ -2,6 +2,7 @@ const MAX_IMAGE_SIDE = 512;
 const HASH_SIZE = 8;
 const DUPLICATE_DISTANCE = 5;
 const BLUR_MEDIAN_RATIO = 0.2;
+const FRAME_WAIT_TIMEOUT_MS = 50;
 const SCORE_WEIGHTS = { sharp: 55, exposure: 25, eyes: 14, smile: 6 };
 
 const VENDOR_URL = new URL('./vendor/mediapipe/', import.meta.url);
@@ -148,7 +149,14 @@ function yieldToBrowser() {
       setTimeout(resolve, 0);
       return;
     }
-    requestAnimationFrame(() => setTimeout(resolve, 0));
+    const frame = requestAnimationFrame(() => {
+      clearTimeout(timeout);
+      setTimeout(resolve, 0);
+    });
+    const timeout = setTimeout(() => {
+      cancelAnimationFrame(frame);
+      resolve();
+    }, FRAME_WAIT_TIMEOUT_MS);
   });
 }
 
@@ -191,48 +199,49 @@ export async function analyzeDay(files, { onProgress } = {}) {
   const total = files.length;
   if (!total) return { kept: [], excluded, warnings: [] };
 
-  const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  const canvas = document.createElement('canvas');
   const hashCanvas = document.createElement('canvas');
-  hashCanvas.width = HASH_SIZE + 1;
-  hashCanvas.height = HASH_SIZE;
-  const hashContext = hashCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
-  let landmarker;
   try {
-    landmarker = await getFaceLandmarker();
-  } catch {
-    warnings.add('face-model-unavailable');
-  }
-
-  for (let index = 0; index < total; index += 1) {
-    const file = files[index];
-    let bitmap;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    hashCanvas.width = HASH_SIZE + 1;
+    hashCanvas.height = HASH_SIZE;
+    const hashContext = hashCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    let landmarker;
     try {
-      bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      landmarker = await getFaceLandmarker();
     } catch {
-      excluded.push({ file, score: null, reason: 'unsupported' });
+      warnings.add('face-model-unavailable');
     }
 
-    if (bitmap) {
+    for (let index = 0; index < total; index += 1) {
+      const file = files[index];
       try {
-        drawScaledImage(context, bitmap);
-      } finally {
-        bitmap.close();
-      }
-      const { canvas } = context;
-      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-      const metrics = readImageMetrics(data, canvas.width, canvas.height);
-      let face = {};
-      if (landmarker) {
+        const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
         try {
-          face = readFaceScores(landmarker.detect(canvas));
-        } catch {
-          warnings.add('face-inference-failed');
+          drawScaledImage(context, bitmap);
+        } finally {
+          bitmap.close();
         }
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        const metrics = readImageMetrics(data, canvas.width, canvas.height);
+        let face = {};
+        if (landmarker) {
+          try {
+            face = readFaceScores(landmarker.detect(canvas));
+          } catch {
+            warnings.add('face-inference-failed');
+          }
+        }
+        photos.push({ file, ...metrics, ...face, hash: differenceHash(hashContext, canvas) });
+      } catch {
+        excluded.push({ file, score: null, reason: 'unsupported' });
       }
-      photos.push({ file, ...metrics, ...face, hash: differenceHash(hashContext, canvas) });
+      onProgress?.({ done: index + 1, total });
+      if (index + 1 < total) await yieldToBrowser();
     }
-    onProgress?.({ done: index + 1, total });
-    if (index + 1 < total) await yieldToBrowser();
+  } finally {
+    canvas.width = 0;
+    hashCanvas.width = 0;
   }
 
   const kept = rankPhotos(photos, excluded);
