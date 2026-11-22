@@ -1,4 +1,5 @@
 import { analyzeDay, preloadModels } from './analyze.js';
+import { decodeToBitmap } from './decode.js';
 import { isoWeek } from './week.js';
 import { parse } from './vendor/exifr/lite.esm.mjs';
 
@@ -216,7 +217,7 @@ async function analyzeSelection(files) {
 }
 
 async function makeThumbnail(file) {
-  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const bitmap = await decodeToBitmap(file);
   const canvas = document.createElement('canvas');
   try {
     const scale = Math.min(1, THUMB_SIDE / Math.max(bitmap.width, bitmap.height));
@@ -225,7 +226,7 @@ async function makeThumbnail(file) {
     const context = canvas.getContext('2d', { alpha: false });
     context.fillStyle = '#fff';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.draw(context, canvas.width, canvas.height);
     return await new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
         if (blob) resolve(blob);

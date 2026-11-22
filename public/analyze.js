@@ -1,3 +1,5 @@
+import { decodeToBitmap } from './decode.js';
+
 const MAX_IMAGE_SIDE = 512;
 const HASH_SIZE = 8;
 const DUPLICATE_DISTANCE = 5;
@@ -134,7 +136,7 @@ function drawScaledImage(context, bitmap) {
   const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(bitmap.width, bitmap.height));
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.draw(context, canvas.width, canvas.height);
 }
 
 function median(values) {
@@ -217,7 +219,7 @@ export async function analyzeDay(files, { onProgress } = {}) {
     for (let index = 0; index < total; index += 1) {
       const file = files[index];
       try {
-        const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        const bitmap = await decodeToBitmap(file);
         try {
           drawScaledImage(context, bitmap);
         } finally {
