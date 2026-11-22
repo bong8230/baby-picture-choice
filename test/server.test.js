@@ -398,10 +398,10 @@ test('HEIC upload: thumb + original + full JPEG; length headers validated; cap c
     assert.equal((await up('ext=heic', all, { 'x-full-length': v })).status, 400, `full=${v}`);
   }
   assert.equal((await readdir(dir)).length, before);
-  // cap: original + full > maxPhotoBytes -> 413
+  // cap: each of original and full under 100, but the sum over -> 413
   const big = Buffer.concat([thumb, Buffer.alloc(60, 1), Buffer.alloc(60, 2)]);
   assert.equal((await up('ext=heic', big, { 'x-full-length': '60' })).status, 413);
-  // each alone under the cap but sum over
+  // a plain photo under the cap still works
   const small = Buffer.concat([thumb, Buffer.alloc(60, 1)]);
   assert.equal((await up('ext=jpg', small)).status, 200);
 });

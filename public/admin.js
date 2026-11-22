@@ -1,5 +1,5 @@
 import { analyzeDay, preloadModels } from './analyze.js';
-import { decodeToBitmap, isHeic as isHeicFile, toFullJpeg } from './decode.js';
+import { decodeToBitmap, toFullJpeg } from './decode.js';
 import { isoWeek } from './week.js';
 import { parse } from './vendor/exifr/lite.esm.mjs';
 
@@ -78,7 +78,7 @@ async function request(path, { method = 'GET', body, headers } = {}) {
       409: '이미 투표를 시작했거나 현재 상태에서 처리할 수 없습니다.',
       413: '파일이 너무 큽니다.',
     }[response.status];
-    throw new Error(message ?? `서버 요청 실패 (${response.status})`);
+    throw Object.assign(new Error(message ?? `서버 요청 실패 (${response.status})`), { status: response.status });
   }
   return response;
 }
@@ -272,11 +272,13 @@ async function applyDraft(week, draft) {
     const skipped = [];
     try {
       const pending = included.filter((entry) => !entry.id);
-      const heicCount = pending.filter((entry) => isHeicFile(entry.original)).length;
+      // Same rule as the server: HEIC means ext heic/heif.
+      const isHeicEntry = (entry) => entry.ext === 'heic' || entry.ext === 'heif';
+      const heicCount = pending.filter(isHeicEntry).length;
       let heicDone = 0;
       for (const [index, entry] of pending.entries()) {
         let fullJpeg = null;
-        if (isHeicFile(entry.original)) {
+        if (isHeicEntry(entry)) {
           progress.textContent = `${week} JPG 변환 중 ${++heicDone}/${heicCount}`;
           try {
             fullJpeg = await toFullJpeg(entry.original);
@@ -289,8 +291,18 @@ async function applyDraft(week, draft) {
             continue;
           }
         }
+        if (entry.original.size + (fullJpeg?.size ?? 0) > MAX_ORIGINAL_BYTES) {
+          skipped.push(`${entry.name} · 원본과 JPG를 합친 크기가 50MB를 넘어요. 이 사진은 올리지 않았어요.`);
+          continue;
+        }
         progress.textContent = `${week} 올리는 중 ${index + 1}/${pending.length}`;
-        await uploadPhoto(week, entry, fullJpeg);
+        try {
+          await uploadPhoto(week, entry, fullJpeg);
+        } catch (error) {
+          // 400/413: only this photo is rejected. Other failures (network, 409, 5xx) abort the batch.
+          if (error.status !== 400 && error.status !== 413) throw error;
+          skipped.push(`${entry.name} · ${error.message} 이 사진은 올리지 않았어요.`);
+        }
       }
 
       progress.textContent = `${week} 점수 저장 중`;

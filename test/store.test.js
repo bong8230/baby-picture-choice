@@ -474,3 +474,20 @@ test('addPhoto with fullJpeg removes full.jpg too when saving the week fails', a
   await assert.rejects(store.addPhoto(WEEK, { ...photoInput(0, 'heic'), fullJpeg: Buffer.from('j') }));
   assert.deepEqual(await readdir(join(root, 'pool', WEEK)), []);
 });
+
+test('finalize: HEIC record lacking hasFullJpeg falls back to copying the original with a warning', async (t) => {
+  const root = await tempRoot(t);
+  const logs = [];
+  const store = createStore(root, { rng: seeded(2), log: (m) => logs.push(m) });
+  const a = (await store.addPhoto(WEEK, { ...photoInput(0, 'heic'), fullJpeg: Buffer.from('j') })).id;
+  const jsonPath = join(root, 'data', 'weeks', `${WEEK}.json`);
+  const data = JSON.parse(await readFile(jsonPath, 'utf8'));
+  delete data.photos[0].hasFullJpeg;
+  await writeFile(jsonPath, JSON.stringify(data));
+  await store.startVoting(WEEK);
+  const v = await store.voterState(WEEK, 'me');
+  assert.equal(v.status, 'done');
+  assert.deepEqual(v.result.files, [`${WEEK}_1.heic`]);
+  assert.ok((await readFile(join(root, 'selected', `${WEEK}_1.heic`))).equals(photoInput(0).bytes));
+  assert.ok(logs.some((m) => m.includes(a)));
+});

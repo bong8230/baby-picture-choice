@@ -171,7 +171,11 @@ export function createStore(rootDir, {
   function planFile(w, id, rank) {
     const p = findPhoto(w, id);
     if (isHeicExt(p.ext)) {
-      if (!p.hasFullJpeg) throw new StoreError('state', `photo ${id} has no full JPEG`);
+      if (!p.hasFullJpeg) {
+        // Should not happen (addPhoto requires it); copy the original rather than block finalize.
+        log(`store: photo ${id} (${w.week}) is ${p.ext} without a full JPEG; copying the original`);
+        return { id, name: `${w.week}_${rank}.${p.ext}`, src: `${id}.${p.ext}` };
+      }
       return { id, name: `${w.week}_${rank}.jpg`, src: `${id}.full.jpg` };
     }
     const outExt = p.ext === 'jpeg' ? 'jpg' : p.ext;
