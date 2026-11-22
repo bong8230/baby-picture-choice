@@ -68,6 +68,8 @@ async function setup(t, opts = {}) {
   await writeFile(join(pub, 'vote.js'), 'export {};');
   await writeFile(join(pub, 'bracket.js'), 'export {};');
   await writeFile(join(pub, 'analyze-spike.html'), '<!doctype html>');
+  await writeFile(join(pub, 'manifest.webmanifest'), '{}');
+  await writeFile(join(pub, 'sw.js'), 'export {};');
   await writeFile(join(pub, 'vendor', 'mediapipe', 'vision_bundle.mjs'), 'export {};');
   await writeFile(join(pub, 'vendor', 'mediapipe', 'wasm', 'x.wasm'), Buffer.from([0, 0x61, 0x73, 0x6d]));
   await writeFile(join(pub, 'vendor', 'mediapipe', 'face.task'), Buffer.from([1, 2, 3]));
@@ -103,6 +105,18 @@ test('funnel requests to admin paths and admin-only static are 404', async (t) =
   for (const p of ['/admin', '/api/admin/weeks', '/vendor/mediapipe/vision_bundle.mjs', '/analyze-spike.html', '/api/admin/funnel']) {
     const r = await req(port, 'GET', p, { headers: { ...FUNNEL, ...ADMIN_H } });
     assert.equal(r.status, 404, p);
+  }
+});
+
+test('the PWA manifest uses its own MIME type and PWA files are admin-only', async (t) => {
+  const { port } = await setup(t);
+  const manifest = await req(port, 'GET', '/manifest.webmanifest', { headers: ADMIN_H });
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers['content-type'], /^application\/manifest\+json(?:;|$)/);
+
+  for (const path of ['/manifest.webmanifest', '/sw.js']) {
+    const response = await req(port, 'GET', path, { headers: { ...ADMIN_H, ...FUNNEL } });
+    assert.equal(response.status, 404, path);
   }
 });
 

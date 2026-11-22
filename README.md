@@ -20,6 +20,14 @@ PC에서 Node 서버(127.0.0.1:8790, 런타임 의존성 없음)를 실행하고
 
 관리 화면: `https://my-pc.example-tailnet.ts.net:10000/admin`
 
+## 갤러리에서 공유로 올리기
+
+1. 갤럭시 Chrome에서 관리 페이지를 열고 메뉴에서 **홈 화면에 추가** 또는 **앱 설치**를 선택합니다.
+2. 삼성 갤러리에서 사진을 선택하고 **공유**를 누른 뒤 **아기사진**을 선택합니다.
+3. 관리 앱에서 분석 결과를 확인하고 사진을 올립니다.
+
+갤러리의 공유 시 HEIF 변환 설정이 켜져 있으면 JPG로 전달되며 그대로 올릴 수 있습니다.
+
 ## 백그라운드 실행 (Windows)
 - 명령 프롬프트: `start /min node server.js`
 - PowerShell: `Start-Process -WindowStyle Minimized node server.js`

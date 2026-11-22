@@ -1,5 +1,6 @@
 import { analyzeDay, preloadModels } from './analyze.js';
 import { decodeToBitmap, toFullJpeg } from './decode.js';
+import { takeSharedFiles } from './share-inbox.js';
 import { isoWeek } from './week.js';
 import { parse } from './vendor/exifr/lite.esm.mjs';
 
@@ -503,8 +504,27 @@ input.addEventListener('change', () => {
   if (files.length) void run(() => analyzeSelection(files));
 });
 
-function refresh() {
-  return run(() => Promise.all([refreshWeeks(), refreshFunnel()]));
+async function refresh() {
+  await run(() => Promise.all([refreshWeeks(), refreshFunnel()]));
+  if (weeks === null || new URLSearchParams(location.search).get('shared') !== '1') return;
+
+  await run(async () => {
+    const pending = await takeSharedFiles();
+    history.replaceState(history.state, '', '/admin');
+    const files = pending?.files ?? [];
+    if (!files.length) {
+      notice.textContent = '공유된 사진을 찾지 못했습니다. 다시 공유해 주세요.';
+      return;
+    }
+    await analyzeSelection(files);
+    const received = `공유된 사진 ${files.length}장을 불러왔습니다.`;
+    notice.textContent = [received, notice.textContent].filter(Boolean).join('\n');
+  });
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/', type: 'module' })
+    .catch((error) => console.warn('Could not register the share target worker', error));
 }
 
 refreshButton.addEventListener('click', refresh);
