@@ -18,9 +18,15 @@
     </header>
     <p id="funnel" class="funnel-state">Funnel 상태 확인 중</p>
 
+    <form id="birth-settings" class="admin-panel settings-row">
+      <label for="birth-date">아기 생일</label>
+      <input type="date" id="birth-date" min="0001-01-01" max="9999-12-31" disabled>
+      <button id="save-birth-date" type="submit" disabled>저장</button>
+    </form>
+
     <section class="admin-panel" aria-labelledby="upload-title">
       <h2 id="upload-title">사진 올리기</h2>
-      <p>주차별 후보는 8~16장을 권장합니다.</p>
+      <p>주차별 후보는 8~16장을 권장합니다. (최대 16장)</p>
       <label class="file-picker">
         <input id="photo-input" type="file" accept="image/*" multiple disabled>
         <span>사진 선택</span>

@@ -138,6 +138,7 @@ function apply(v, force) {
   const prev = view;
   view = v;
   if (changed && !force && revealing && step === 3 && prev && prev.result && v.result && !v.jointFinal
+      && prev.weekLabel === v.weekLabel && prev.babyWeekText === v.babyWeekText
       && JSON.stringify(prev.result) === JSON.stringify(v.result)) {
     const n = app.querySelector('.saved-note');
     if (n) n.textContent = v.status === 'done' ? '✔ PC에 저장됨' : '저장하는 중이에요…';
@@ -160,11 +161,17 @@ function expired() {
 function render() {
   if (!view) return;
   const v = view;
-  if (v.jointFinal) { revealing = false; return renderJoint(v); }
-  if (v.result) return renderReveal(v);
-  revealing = false;
-  if (v.match) return renderMatch(v);
-  return renderWaiting(v);
+  if (v.result && !v.jointFinal) {
+    renderReveal(v);
+  } else {
+    revealing = false;
+    if (v.jointFinal) renderJoint(v);
+    else if (v.match) renderMatch(v);
+    else renderWaiting(v);
+  }
+  app.firstElementChild.prepend(el('header', { class: 'joint-sub' },
+    el('strong', { text: v.weekLabel ?? v.week }),
+    v.birthDate && v.babyWeekText ? el('div', { text: v.babyWeekText }) : null));
 }
 
 function renderMatch(v) {

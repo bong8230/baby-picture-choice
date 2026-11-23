@@ -1,7 +1,7 @@
 import { analyzeDay, preloadModels } from './analyze.js';
 import { decodeToBitmap, toFullJpeg } from './decode.js';
 import { takeSharedFiles } from './share-inbox.js';
-import { isoWeek } from './week.js';
+import { babyDayText, babyWeekText, isoWeek, weekLabel } from './week.js';
 import { parse } from './vendor/exifr/lite.esm.mjs';
 
 const THUMB_SIDE = 1600;
@@ -9,6 +9,12 @@ const THUMB_QUALITY = 0.85;
 const PREVIEW_SIDE = 480;
 const PREVIEW_QUALITY = 0.8;
 const MAX_ORIGINAL_BYTES = 50 * 1024 * 1024;
+const MAX_PER_WEEK = 16;
+const BEFORE_VOTING = '16장 이하로 줄여야 투표를 시작할 수 있어요.';
+const SEOUL_DEADLINE = new Intl.DateTimeFormat('ko-KR', {
+  month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  hourCycle: 'h23', timeZone: 'Asia/Seoul',
+});
 const EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']);
 const STATUS_LABELS = {
   collecting: '후보 수집 중',
@@ -38,9 +44,15 @@ const progress = document.querySelector('#progress');
 const notice = document.querySelector('#notice');
 const draftList = document.querySelector('#drafts');
 const weekList = document.querySelector('#weeks');
+const birthSettings = document.querySelector('#birth-settings');
+const birthInput = document.querySelector('#birth-date');
+const birthSave = document.querySelector('#save-birth-date');
 const drafts = new Map();
 const linksByWeek = new Map();
+const openPhotoWeeks = new Set();
 let weeks = null;
+let birthDate = null;
+let settingsReady = false;
 let busy = false;
 
 function element(tag, text, className) {
@@ -76,12 +88,16 @@ async function request(path, { method = 'GET', body, headers } = {}) {
     throw new Error('서버에 연결할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요.');
   }
   if (!response.ok) {
-    const message = {
+    let message = {
       400: '사진 정보나 요청 형식이 올바르지 않습니다.',
       404: '요청한 항목에 접근할 수 없습니다.',
       409: '이미 투표를 시작했거나 현재 상태에서 처리할 수 없습니다.',
       413: '파일이 너무 큽니다.',
     }[response.status];
+    if (response.status === 409) {
+      const details = await response.json().catch(() => null);
+      if (details?.message === BEFORE_VOTING) message = BEFORE_VOTING;
+    }
     throw Object.assign(new Error(message ?? `서버 요청 실패 (${response.status})`), { status: response.status });
   }
   return response;
@@ -90,6 +106,31 @@ async function request(path, { method = 'GET', body, headers } = {}) {
 async function refreshWeeks() {
   weeks = await (await request('/api/admin/weeks')).json();
 }
+
+async function refreshSettings() {
+  try {
+    const response = await request('/api/admin/settings');
+    ({ birthDate } = await response.json());
+    birthInput.value = birthDate ?? '';
+    settingsReady = true;
+  } catch {
+    notice.textContent = '아기 생일 설정을 불러오지 못했습니다.';
+  }
+}
+
+birthSettings.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!settingsReady || busy) return;
+  void run(async () => {
+    const response = await request('/api/admin/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ birthDate: birthInput.value || null }),
+    });
+    ({ birthDate } = await response.json());
+    notice.textContent = birthDate ? '아기 생일을 저장했습니다.' : '아기 생일 설정을 지웠습니다.';
+  });
+});
 
 async function refreshFunnel() {
   funnel.textContent = 'Funnel 상태 확인 중';
@@ -161,6 +202,7 @@ async function existingEntries(week) {
       preview,
       analysisFile: new File([thumbnail], photo.originalName, { type: 'image/jpeg' }),
       previousScore: photo.score,
+      takenAt: photo.takenAt,
     });
   }
   return entries;
@@ -403,16 +445,81 @@ function linkRow(label, link) {
   return row;
 }
 
+function appendWeekHeading(card, week) {
+  card.append(element('h3', weekLabel(week) ?? week));
+  card.append(element('small', week, 'week-id'));
+  const age = babyWeekText(birthDate, week);
+  if (age) card.append(element('p', age, 'week-age'));
+}
+
+function overflowText(count, overBy, deleteAt) {
+  const message = `${count}장 업로드됨 — ${overBy}장 초과. 16장 이하로 삭제해 주세요.`;
+  if (deleteAt == null) return message;
+  const parts = Object.fromEntries(SEOUL_DEADLINE.formatToParts(deleteAt).map(({ type, value }) => [type, value]));
+  return `${message} ${parts.month}월 ${parts.day}일 ${parts.hour}:${parts.minute}에 점수 낮은 사진부터 자동 삭제돼요.`;
+}
+
+function uploadedPhotos(week, status) {
+  const details = element('details');
+  const content = element('div');
+  details.append(element('summary', '업로드한 사진'), content);
+  details.open = openPhotoWeeks.has(week);
+  let loaded = false;
+
+  async function load() {
+    if (loaded) return;
+    loaded = true;
+    content.textContent = '사진을 불러오는 중입니다.';
+    try {
+      const photos = await (await request(`${weekPath(week)}/photos`)).json();
+      const entries = photos.map(({ id, originalName, takenAt }) => ({
+        id, name: originalName, takenAt, preview: imagePath(week, id),
+      }));
+      const canDelete = status === 'collecting' && !drafts.has(week);
+      const onDelete = canDelete ? (entry) => {
+        if (busy || !window.confirm(`PC에 저장된 ${entry.name} 사진을 삭제할까요?`)) return;
+        void run(async () => {
+          await request(`${weekPath(week)}/photos/${encodeURIComponent(entry.id)}`, { method: 'DELETE' });
+          await refreshWeeks();
+          notice.textContent = '사진을 삭제했습니다.';
+        });
+      } : null;
+      content.replaceChildren(photoList(entries, true, { editable: false, onDelete }));
+    } catch (error) {
+      content.textContent = error.message;
+      loaded = false;
+    }
+  }
+
+  details.addEventListener('toggle', () => {
+    if (!details.isConnected) return;
+    if (details.open) {
+      openPhotoWeeks.add(week);
+      void load();
+    } else {
+      openPhotoWeeks.delete(week);
+    }
+  });
+  if (details.open) void load();
+  return details;
+}
+
 function renderWeeks() {
   if (weeks === null) return;
   weekList.replaceChildren();
   if (!weeks.length) weekList.append(element('p', '아직 저장한 주차가 없습니다.'));
-  for (const { week, status, photoCount, voters } of weeks) {
+  for (const { week, status, photoCount, count = photoCount, overBy = Math.max(0, count - MAX_PER_WEEK), deleteAt, voters } of weeks) {
     const card = element('article', undefined, 'week-card');
-    card.append(element('h3', week), element('p', `${STATUS_LABELS[status] ?? status} · ${photoCount}장`));
-    if (photoCount > 32) card.append(element('p', '후보가 32장을 넘었습니다.', 'warning'));
-    if (status === 'collecting' && photoCount && !drafts.has(week)) {
-      card.append(button('투표 시작', () => startVote(week)));
+    appendWeekHeading(card, week);
+    card.append(element('p', `${STATUS_LABELS[status] ?? status} · ${count}장`));
+    if (status === 'collecting' && overBy > 0) {
+      card.append(element('p', overflowText(count, overBy, deleteAt), 'overflow-notice'));
+      card.append(element('p', BEFORE_VOTING, 'warning'));
+    }
+    if (status === 'collecting' && count && !drafts.has(week)) {
+      const start = button('투표 시작', () => startVote(week));
+      start.disabled = busy || overBy > 0;
+      card.append(start);
     }
     if (status === 'voting') {
       card.append(element('p', `나 ${voters?.me?.done ? '완료' : '미완료'} · 아내 ${voters?.wife?.done ? '완료' : '미완료'}`));
@@ -423,11 +530,12 @@ function renderWeeks() {
     if (links && status !== 'collecting') {
       card.append(linkRow('내 투표 링크', links.me), linkRow('아내 투표 링크', links.wife));
     }
+    if (count > 0) card.append(uploadedPhotos(week, status));
     weekList.append(card);
   }
 }
 
-function photoList(entries, included) {
+function photoList(entries, included, { editable = true, onDelete = null } = {}) {
   const list = element('ul', undefined, 'photo-list');
   if (!entries.length) list.append(element('li', '해당 사진이 없습니다.'));
   for (const entry of entries) {
@@ -440,6 +548,8 @@ function photoList(entries, included) {
       item.append(photo);
     }
     item.append(element('span', entry.name));
+    const age = babyDayText(birthDate, entry.takenAt);
+    if (age) item.append(element('small', age, 'photo-age'));
     if (entry.id) item.append(element('small', 'PC에 저장됨'));
     if (!included && entry.reason) {
       item.append(element('small', [
@@ -447,7 +557,11 @@ function photoList(entries, included) {
       ].filter(Boolean).join(' · ')));
     }
     const canRestore = entry.id || !['unsupported', 'format', 'size'].includes(entry.reason);
-    if (included || canRestore) {
+    if (onDelete) {
+      const remove = button('삭제', () => onDelete(entry), 'secondary');
+      remove.setAttribute('aria-label', `${entry.name} 삭제`);
+      item.append(remove);
+    } else if (editable && (included || canRestore)) {
       const toggle = button(included ? '제외' : '되살리기', () => {
         entry.included = !included;
         renderDrafts();
@@ -468,9 +582,12 @@ function renderDrafts() {
     const included = live.filter((entry) => entry.included);
     const excluded = live.filter((entry) => !entry.included);
     const deletions = excluded.filter((entry) => entry.id).length;
-    card.append(element('h3', `${week} · 후보 ${included.length}장`));
+    appendWeekHeading(card, week);
+    card.append(element('p', `후보 ${included.length}장`));
     if (draft.warnings.length) card.append(element('p', '얼굴 분석 없이 진행했습니다.', 'warning'));
-    if (included.length > 32) card.append(element('p', '후보가 32장을 넘었습니다.', 'warning'));
+    if (included.length > MAX_PER_WEEK) {
+      card.append(element('p', `이대로 올리면 ${included.length}장으로 ${included.length - MAX_PER_WEEK}장 초과해요. 초과 상태가 48시간 지나면 점수 낮은 사진부터 자동 삭제돼요.`, 'overflow-notice'));
+    }
     if (deletions) card.append(element('p', `올리면 PC에 저장된 후보 ${deletions}장을 삭제합니다.`, 'warning'));
     if (excluded.some(isHeic)) {
       card.append(element('p', "HEIC 사진은 지원되지 않아요. 갤럭시 카메라 설정에서 'HEIF 사진'을 끄면 JPEG로 저장돼요.", 'warning'));
@@ -496,6 +613,8 @@ function render() {
   input.disabled = busy || weeks === null;
   inputAny.disabled = input.disabled;
   refreshButton.disabled = busy;
+  birthInput.disabled = busy || !settingsReady;
+  birthSave.disabled = birthInput.disabled;
   renderDrafts();
   renderWeeks();
 }
@@ -510,7 +629,7 @@ for (const picker of [input, inputAny]) {
 }
 
 async function refresh() {
-  await run(() => Promise.all([refreshWeeks(), refreshFunnel()]));
+  await run(() => Promise.all([refreshWeeks(), refreshFunnel(), refreshSettings()]));
   if (weeks === null || new URLSearchParams(location.search).get('shared') !== '1') return;
 
   await run(async () => {
