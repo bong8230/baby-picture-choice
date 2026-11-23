@@ -7,6 +7,8 @@ import { createStore, StoreError } from '../src/store.js';
 import { MatchError, currentMatch, merge } from '../public/bracket.js';
 
 const WEEK = '2026-W47';
+const FILE_LABEL = '2026-11월3주차';
+const TWO_DAYS = 48 * 60 * 60 * 1000;
 
 async function tempRoot(t) {
   const dir = await mkdtemp(join(tmpdir(), 'store-test-'));
@@ -67,7 +69,7 @@ test('addPhoto stores original bytes verbatim and thumbnail', async (t) => {
   assert.ok((await readFile(thumb)).equals(input.thumb));
   const weeks = await store.listWeeks();
   assert.deepEqual(weeks, [
-    { week: WEEK, status: 'collecting', photoCount: 1, voters: { me: { done: false }, wife: { done: false } } },
+    { week: WEEK, status: 'collecting', photoCount: 1, count: 1, overBy: 0, deleteAt: null, voters: { me: { done: false }, wife: { done: false } } },
   ]);
 });
 
@@ -139,13 +141,13 @@ test('concurrent identical picks: one succeeds, one MatchError with latest view'
   assert.equal(ok[0].value.match.index, 2);
 });
 
-test('me and wife play 20 matches concurrently to completion', async (t) => {
+test('me and wife play the maximum 16 matches concurrently to completion', async (t) => {
   const root = await tempRoot(t);
   const store = createStore(root, { rng: seeded(4) });
-  const ids = await addPhotos(store, 20);
+  const ids = await addPhotos(store, 16);
   await store.startVoting(WEEK);
   const first = (await store.voterState(WEEK, 'me')).match;
-  assert.equal(first.total, 20);
+  assert.equal(first.total, 16);
   const pref = byList(ids);
   let count = { me: 0, wife: 0 };
   const run = async (voter) => {
@@ -156,7 +158,7 @@ test('me and wife play 20 matches concurrently to completion', async (t) => {
     }
   };
   await Promise.all([run('me'), run('wife')]);
-  assert.deepEqual(count, { me: 20, wife: 20 });
+  assert.deepEqual(count, { me: 16, wife: 16 });
   const me = await store.voterState(WEEK, 'me');
   assert.equal(me.status, 'done');
   assert.equal(me.myRanks.length, 3);
@@ -192,7 +194,7 @@ test('result hidden until both done, then overlap copied to selected/ and done',
   assert.ok(expected.length >= 1);
   assert.equal(expected[0], ids[0]);
   assert.deepEqual(wifeView.result.saved, expected);
-  const names = expected.map((_, i) => `${WEEK}_${i + 1}.jpg`);
+  const names = expected.map((_, i) => `${FILE_LABEL}_${i + 1}.jpg`);
   assert.deepEqual(wifeView.result.files, names);
   assert.equal(wifeView.result.joint, false);
   assert.deepEqual((await readdir(join(root, 'selected'))).sort(), names);
@@ -281,7 +283,7 @@ test('joint final: no overlap -> pending; concurrent jointPick applies only the 
   assert.deepEqual(v.result.saved, [b]);
   assert.equal(v.result.joint, true);
   const sel = await readdir(join(root, 'selected'));
-  assert.deepEqual(sel, [`${WEEK}_1.jpg`]);
+  assert.deepEqual(sel, [`${FILE_LABEL}_1.jpg`]);
   assert.ok((await readFile(join(root, 'selected', sel[0]))).equals(photoInput(ids.indexOf(b)).bytes));
 });
 
@@ -306,22 +308,22 @@ test('finalize resume: copies the rest under the same names without overwriting'
   const jsonPath = join(root, 'data', 'weeks', `${WEEK}.json`);
   const data = JSON.parse(await readFile(jsonPath, 'utf8'));
   assert.equal(data.status, 'done');
-  assert.deepEqual(data.final.files.map((f) => f.name), [`${WEEK}_1.jpg`, `${WEEK}_2.jpg`, `${WEEK}_3.jpg`]);
+  assert.deepEqual(data.final.files.map((f) => f.name), [`${FILE_LABEL}_1.jpg`, `${FILE_LABEL}_2.jpg`, `${FILE_LABEL}_3.jpg`]);
   const src = (n) => photoInput(ids.indexOf(data.final.files[n].id)).bytes;
   data.status = 'finalizing';
   await writeFile(jsonPath, JSON.stringify(data));
   const sel = join(root, 'selected');
-  await unlink(join(sel, `${WEEK}_2.jpg`));
-  await unlink(join(sel, `${WEEK}_3.jpg`));
-  await writeFile(join(sel, `${WEEK}_1.jpg`), 'pre-existing');
+  await unlink(join(sel, `${FILE_LABEL}_2.jpg`));
+  await unlink(join(sel, `${FILE_LABEL}_3.jpg`));
+  await writeFile(join(sel, `${FILE_LABEL}_1.jpg`), 'pre-existing');
 
   const store2 = createStore(root);
   assert.equal((await store2.listWeeks())[0].status, 'finalizing'); // listWeeks does not retry
   await store2.resumeFinalize();
-  assert.deepEqual((await readdir(sel)).sort(), [`${WEEK}_1.jpg`, `${WEEK}_2.jpg`, `${WEEK}_3.jpg`]);
-  assert.equal(await readFile(join(sel, `${WEEK}_1.jpg`), 'utf8'), 'pre-existing');
-  assert.ok((await readFile(join(sel, `${WEEK}_2.jpg`))).equals(src(1)));
-  assert.ok((await readFile(join(sel, `${WEEK}_3.jpg`))).equals(src(2)));
+  assert.deepEqual((await readdir(sel)).sort(), [`${FILE_LABEL}_1.jpg`, `${FILE_LABEL}_2.jpg`, `${FILE_LABEL}_3.jpg`]);
+  assert.equal(await readFile(join(sel, `${FILE_LABEL}_1.jpg`), 'utf8'), 'pre-existing');
+  assert.ok((await readFile(join(sel, `${FILE_LABEL}_2.jpg`))).equals(src(1)));
+  assert.ok((await readFile(join(sel, `${FILE_LABEL}_3.jpg`))).equals(src(2)));
   assert.equal((await store2.voterState(WEEK, 'me')).status, 'done');
   const after = JSON.parse(await readFile(jsonPath, 'utf8'));
   assert.equal(after.status, 'done');
@@ -426,7 +428,7 @@ test('HEIC photo: full.jpg stored, finalize copies it as .jpg; jpeg->.jpg; png k
   assert.equal(v.result.saved.length, 3);
   for (const [i, id] of v.result.saved.entries()) {
     const [ext, expected] = want[id];
-    assert.equal(v.result.files[i], `${WEEK}_${i + 1}.${ext}`);
+    assert.equal(v.result.files[i], `${FILE_LABEL}_${i + 1}.${ext}`);
     assert.ok((await readFile(join(root, 'selected', v.result.files[i]))).equals(expected));
   }
   assert.ok((await readFile(join(root, 'pool', WEEK, `${a}.heic`))).equals(photoInput(0).bytes));
@@ -454,12 +456,15 @@ test('finalize resume: old-format record (no src) still copies the original; rec
   const jsonPath = join(root, 'data', 'weeks', `${WEEK}.json`);
   const data = JSON.parse(await readFile(jsonPath, 'utf8'));
   assert.ok(data.final.files.every((f) => typeof f.src === 'string'));
-  for (const f of data.final.files) delete f.src; // old record format
+  const sel = join(root, 'selected');
+  for (const [index, f] of data.final.files.entries()) {
+    await unlink(join(sel, f.name));
+    delete f.src;
+    f.name = `${WEEK}_${index + 1}.jpg`; // Old finalize plans used the ISO ID.
+  }
   data.status = 'finalizing';
   await writeFile(jsonPath, JSON.stringify(data));
-  const sel = join(root, 'selected');
   const name = data.final.files[0].name;
-  await unlink(join(sel, name));
   const store2 = createStore(root);
   await store2.resumeFinalize();
   const src = photoInput(ids.indexOf(data.final.files[0].id)).bytes;
@@ -487,7 +492,94 @@ test('finalize: HEIC record lacking hasFullJpeg falls back to copying the origin
   await store.startVoting(WEEK);
   const v = await store.voterState(WEEK, 'me');
   assert.equal(v.status, 'done');
-  assert.deepEqual(v.result.files, [`${WEEK}_1.heic`]);
-  assert.ok((await readFile(join(root, 'selected', `${WEEK}_1.heic`))).equals(photoInput(0).bytes));
+  assert.deepEqual(v.result.files, [`${FILE_LABEL}_1.heic`]);
+  assert.ok((await readFile(join(root, 'selected', `${FILE_LABEL}_1.heic`))).equals(photoInput(0).bytes));
   assert.ok(logs.some((m) => m.includes(a)));
+});
+
+test('settings persist a real birth date and accept clearing it', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root);
+  assert.deepEqual(await store.getSettings(), { birthDate: null });
+  await store.setSettings({ birthDate: '2024-02-29' });
+  assert.deepEqual(await createStore(root).getSettings(), { birthDate: '2024-02-29' });
+  for (const birthDate of ['2026-02-29', '2026-4-01', '2026-01-01\n', '', undefined]) {
+    await assert.rejects(store.setSettings({ birthDate }), (error) => error.code === 'invalid');
+  }
+  await store.setSettings({ birthDate: null });
+  assert.deepEqual(await store.getSettings(), { birthDate: null });
+});
+
+test('overflow clock starts at 17, blocks voting, and clears when reduced to 16', async (t) => {
+  const root = await tempRoot(t);
+  let now = 1000;
+  const store = createStore(root, { now: () => now });
+  const ids = await addPhotos(store, 17);
+  const weekFile = join(root, 'data', 'weeks', `${WEEK}.json`);
+  assert.equal(JSON.parse(await readFile(weekFile, 'utf8')).overSince, now);
+  now += 500;
+  const extra = (await store.addPhoto(WEEK, photoInput(18))).id;
+  const [over] = await store.listWeeks();
+  assert.deepEqual([over.count, over.overBy, over.deleteAt], [18, 2, 1000 + TWO_DAYS]);
+  await assert.rejects(store.startVoting(WEEK), (error) => error.code === 'state' && /16/.test(error.message));
+  await store.removePhoto(WEEK, extra);
+  await store.removePhoto(WEEK, ids[16]);
+  assert.equal(JSON.parse(await readFile(weekFile, 'utf8')).overSince, undefined);
+  const [withinLimit] = await store.listWeeks();
+  assert.deepEqual([withinLimit.count, withinLimit.overBy, withinLimit.deleteAt], [16, 0, null]);
+  await store.startVoting(WEEK);
+});
+
+test('sweep keeps the higher-ranked photos and removes original, thumb, and full JPEG at 48 hours', async (t) => {
+  const root = await tempRoot(t);
+  let now = 5000;
+  const store = createStore(root, { now: () => now, log: () => {} });
+  const kept = [];
+  for (let i = 0; i < 15; i += 1) kept.push((await store.addPhoto(WEEK, { ...photoInput(i), score: 2 })).id);
+  const older = (await store.addPhoto(WEEK, { ...photoInput(15), score: 1 })).id;
+  now += 1;
+  const newest = (await store.addPhoto(WEEK, { ...photoInput(16), score: 1 })).id;
+  const overflowSince = now;
+  const unrated = (await store.addPhoto(WEEK, { ...photoInput(17, 'heic'), score: null, fullJpeg: Buffer.from('jpeg') })).id;
+  now = overflowSince + TWO_DAYS - 1;
+  assert.deepEqual(await store.sweepOverflow(), []);
+  assert.equal((await store.listWeeks())[0].count, 18);
+  now += 1;
+  assert.deepEqual(await store.sweepOverflow(), [{ week: WEEK, removed: 2 }]);
+  assert.deepEqual(await store.sweepOverflow(), []);
+  const [after] = await store.listWeeks();
+  assert.deepEqual([after.count, after.overBy, after.deleteAt], [16, 0, null]);
+  const files = await readdir(join(root, 'pool', WEEK));
+  assert.equal(files.length, 32);
+  assert.ok(!files.some((name) => name.startsWith(newest + '.') || name.startsWith(unrated + '.')));
+  for (const id of [...kept, older]) assert.ok(files.includes(`${id}.jpg`));
+});
+
+test('overflow sweep leaves voting and done weeks unchanged', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root, { now: () => TWO_DAYS + 1000 });
+  for (const [week, status] of [[WEEK, 'voting'], ['2026-W48', 'done']]) {
+    await addPhotos(store, 17, week);
+    const file = join(root, 'data', 'weeks', `${week}.json`);
+    const record = JSON.parse(await readFile(file, 'utf8'));
+    Object.assign(record, { status, overSince: 0 });
+    await writeFile(file, JSON.stringify(record));
+  }
+  assert.deepEqual(await store.sweepOverflow(), []);
+  assert.deepEqual((await store.listWeeks()).map(({ status, count }) => [status, count]), [['done', 17], ['voting', 17]]);
+});
+
+test('legacy collecting overflow starts a new grace period when first seen', async (t) => {
+  const root = await tempRoot(t);
+  const store = createStore(root, { now: () => TWO_DAYS, log: () => {} });
+  await addPhotos(store, 17);
+  const file = join(root, 'data', 'weeks', `${WEEK}.json`);
+  const record = JSON.parse(await readFile(file, 'utf8'));
+  delete record.overSince;
+  await writeFile(file, JSON.stringify(record));
+
+  assert.deepEqual(await store.sweepOverflow(), []);
+  const [week] = await store.listWeeks();
+  assert.equal(week.count, 17);
+  assert.equal(week.deleteAt, 2 * TWO_DAYS);
 });

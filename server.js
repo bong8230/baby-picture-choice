@@ -1,4 +1,4 @@
-// Entry point: load config.json, open the store, finish any interrupted finalize, and listen on
+// Entry point: load config.json, open the store, finish interrupted work, and listen on
 // 127.0.0.1 only. Tailscale serve/funnel (port 10000) proxies to this address.
 
 import { readFile } from 'node:fs/promises';
@@ -28,6 +28,11 @@ export async function main() {
   } catch (e) {
     // Never block boot: a stuck week retries on its next state load.
     console.error('resumeFinalize failed (will retry on next load):', e);
+  }
+  try {
+    await store.sweepOverflow();
+  } catch (e) {
+    console.error('sweepOverflow failed (will retry on next admin load):', e);
   }
 
   const server = createServer({ rootDir: APP_DIR, config, store });

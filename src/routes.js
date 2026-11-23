@@ -283,7 +283,11 @@ export function createServer({
     const n = segs.length;
     if (n === 1 && a === 'admin' && m === 'GET') return sendStatic(res, ['admin.html']);
     if (a !== 'api' || b !== 'admin') return m === 'GET' ? sendStatic(res, segs) : notFound(res);
-    if (n === 3 && c === 'weeks' && m === 'GET') return json(res, 200, await store.listWeeks());
+    if (n === 3 && c === 'weeks' && m === 'GET') return json(res, 200, await store.listWeeks({ sweep: true }));
+    if (n === 3 && c === 'settings' && m === 'GET') return json(res, 200, await store.getSettings());
+    if (n === 3 && c === 'settings' && m === 'PUT') {
+      return json(res, 200, await store.setSettings(await readJson(req)));
+    }
     if (n === 3 && c === 'funnel' && m === 'GET') {
       let state = 'unknown';
       try { state = await funnelState(); } catch (err) { log('funnel status failed:', err.message); }

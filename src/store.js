@@ -5,7 +5,8 @@
 //   pool/<week>/<id>.thumb.jpg    thumbnail
 //   pool/<week>/<id>.full.jpg     full-size JPEG of a HEIC/HEIF original (made on the phone)
 //   data/weeks/<week>.json        week state (written to .tmp then renamed)
-//   selected/<week>_<rank>.<ext>  final copies (HEIC/HEIF -> the full JPEG as .jpg; jpeg -> .jpg)
+//   data/settings.json          birthday setting (atomic write)
+//   selected/<month-week>_<rank>.<ext>  final copies (HEIC/HEIF -> the full JPEG as .jpg; jpeg -> .jpg)
 //
 // Every read-validate-modify-write of a week runs inside a per-week promise-chain lock.
 // Status flow: collecting -> voting -> (voting + jointFinal pending) -> finalizing -> done.
@@ -16,6 +17,7 @@ import { join } from 'node:path';
 import {
   createBracket, currentMatch, applyPick, undo as undoBracket, ranks, merge, MatchError,
 } from '../public/bracket.js';
+import { babyWeekText, isCalendarDate, weekFileLabel, weekLabel } from '../public/week.js';
 
 export { MatchError };
 
@@ -31,6 +33,8 @@ export class StoreError extends Error {
 const WEEK_RE = /^\d{4}-W\d{2}$/;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']);
+const MAX_PER_WEEK = 16;
+const OVERFLOW_GRACE_MS = 48 * 60 * 60 * 1000;
 const VOTERS = ['me', 'wife'];
 const OTHER = { me: 'wife', wife: 'me' };
 const isHeicExt = (e) => e === 'heic' || e === 'heif';
@@ -88,6 +92,7 @@ export function createStore(rootDir, {
 } = {}) {
   const poolDir = join(rootDir, 'pool');
   const weeksDir = join(rootDir, 'data', 'weeks');
+  const settingsFile = join(rootDir, 'data', 'settings.json');
   const selectedDir = join(rootDir, 'selected');
   const locks = new Map();
 
@@ -141,6 +146,80 @@ export function createStore(rootDir, {
       .reverse();
   }
 
+  async function listWeekRecords() {
+    const records = [];
+    for (const week of await listWeekIds()) {
+      const record = await safeLoad(week);
+      if (record) records.push(record);
+    }
+    return records;
+  }
+
+  async function getSettings() {
+    try {
+      const settings = JSON.parse(await readFile(settingsFile, 'utf8'));
+      return { birthDate: isCalendarDate(settings?.birthDate) ? settings.birthDate : null };
+    } catch (e) {
+      if (e.code === 'ENOENT') return { birthDate: null };
+      throw e;
+    }
+  }
+
+  async function unlinkPhoto(week, photo) {
+    const { id, ext } = photo;
+    await Promise.all([`${id}.${ext}`, `${id}.thumb.jpg`, `${id}.full.jpg`].map(async (file) => {
+      try {
+        await unlink(join(poolDir, week, file));
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }));
+  }
+
+  function needsOverflowCheck(w, time) {
+    return w?.status === 'collecting' && w.photos.length > MAX_PER_WEEK &&
+      (!Number.isFinite(w.overSince) || time >= w.overSince + OVERFLOW_GRACE_MS);
+  }
+
+  async function sweepOverflow(records) {
+    const weeks = records ?? await listWeekRecords();
+    const removed = [];
+    for (const [index, record] of weeks.entries()) {
+      if (!needsOverflowCheck(record, now())) continue;
+      const week = record.week;
+      try {
+        weeks[index] = await withLock(week, async () => {
+          const fresh = await load(week);
+          const time = now();
+          if (!needsOverflowCheck(fresh, time)) return fresh;
+          if (!Number.isFinite(fresh.overSince)) {
+            // Give already over-limit weeks from older versions the full grace period.
+            fresh.overSince = time;
+            await save(fresh);
+            return fresh;
+          }
+
+          const extras = fresh.photos.slice().reverse()
+            .sort((a, b) => (a.score ?? -Infinity) - (b.score ?? -Infinity) || b.addedAt - a.addedAt)
+            .slice(0, fresh.photos.length - MAX_PER_WEEK);
+          const ids = new Set(extras.map((photo) => photo.id));
+          fresh.photos = fresh.photos.filter((photo) => !ids.has(photo.id));
+          delete fresh.overSince;
+          await save(fresh);
+          const cleanup = await Promise.allSettled(extras.map((photo) => unlinkPhoto(week, photo)));
+          const failures = cleanup.filter((result) => result.status === 'rejected');
+          const suffix = failures.length ? ` (${failures.length} file cleanup failures)` : '';
+          log(`store: removed ${extras.length} overflow photo(s) from ${week}${suffix}`);
+          removed.push({ week, removed: extras.length });
+          return fresh;
+        });
+      } catch (e) {
+        log(`store: overflow sweep for ${week} failed: ${e.message}`);
+      }
+    }
+    return removed;
+  }
+
   const isDone = (w, voter) => !!(w.voters && ranks(w.voters[voter]).length);
   const scoresOf = (w) => Object.fromEntries(w.photos.map((p) => [p.id, p.score ?? 0]));
 
@@ -170,16 +249,17 @@ export function createStore(rootDir, {
   // resume reuses them. Records without `src` (older format) copy the original file.
   function planFile(w, id, rank) {
     const p = findPhoto(w, id);
+    const name = `${weekFileLabel(w.week) ?? w.week}_${rank}`;
     if (isHeicExt(p.ext)) {
       if (!p.hasFullJpeg) {
         // Should not happen (addPhoto requires it); copy the original rather than block finalize.
         log(`store: photo ${id} (${w.week}) is ${p.ext} without a full JPEG; copying the original`);
-        return { id, name: `${w.week}_${rank}.${p.ext}`, src: `${id}.${p.ext}` };
+        return { id, name: `${name}.${p.ext}`, src: `${id}.${p.ext}` };
       }
-      return { id, name: `${w.week}_${rank}.jpg`, src: `${id}.full.jpg` };
+      return { id, name: `${name}.jpg`, src: `${id}.full.jpg` };
     }
     const outExt = p.ext === 'jpeg' ? 'jpg' : p.ext;
-    return { id, name: `${w.week}_${rank}.${outExt}`, src: `${id}.${p.ext}` };
+    return { id, name: `${name}.${outExt}`, src: `${id}.${p.ext}` };
   }
 
   function beginFinalize(w, me, wife, saved, joint) {
@@ -239,15 +319,22 @@ export function createStore(rootDir, {
     await tryFinish(w);
   }
 
-  function view(w, voter) {
+  async function view(w, voter) {
     if (w.status === 'collecting' || !w.voters) throw new StoreError('state', `week ${w.week} is not voting`);
     const mine = w.voters[voter];
     const myDone = isDone(w, voter);
     const otherDone = isDone(w, OTHER[voter]);
     const both = myDone && otherDone;
     const open = w.status === 'voting' && !w.jointFinal;
+    const { birthDate } = await getSettings().catch((e) => {
+      log(`store: could not read birth date for ${w.week}: ${e.message}`);
+      return { birthDate: null };
+    });
     return {
       week: w.week,
+      weekLabel: weekLabel(w.week),
+      birthDate,
+      babyWeekText: babyWeekText(birthDate, w.week),
       voter,
       status: w.status,
       photos: w.photos.map((p) => p.id),
@@ -277,7 +364,7 @@ export function createStore(rootDir, {
       try {
         mutate(w);
       } catch (e) {
-        if (e instanceof MatchError) e.view = view(w, voter);
+        if (e instanceof MatchError) e.view = await view(w, voter);
         throw e;
       }
       await commit(w);
@@ -286,20 +373,35 @@ export function createStore(rootDir, {
   }
 
   return {
-    async listWeeks() {
-      const out = [];
-      for (const week of await listWeekIds()) {
-        const w = await safeLoad(week);
-        if (!w) continue;
-        out.push({
-          week,
-          status: w.status,
-          photoCount: w.photos.length,
-          voters: { me: { done: isDone(w, 'me') }, wife: { done: isDone(w, 'wife') } },
-        });
-      }
-      return out;
+    getSettings,
+    async setSettings({ birthDate } = {}) {
+      if (birthDate !== null && !isCalendarDate(birthDate)) throw new StoreError('invalid', 'bad birthDate');
+      const settings = { birthDate };
+      await mkdir(join(rootDir, 'data'), { recursive: true });
+      await atomicWrite(settingsFile, JSON.stringify(settings, null, 2));
+      return settings;
     },
+
+    async listWeeks({ sweep = false } = {}) {
+      const records = await listWeekRecords();
+      if (sweep) await sweepOverflow(records);
+      return records.filter(Boolean).map((w) => {
+        const count = w.photos.length;
+        const overBy = Math.max(0, count - MAX_PER_WEEK);
+        const canSweep = w.status === 'collecting' && overBy > 0 && Number.isFinite(w.overSince);
+        return {
+          week: w.week,
+          status: w.status,
+          count,
+          photoCount: count,
+          overBy,
+          deleteAt: canSweep ? w.overSince + OVERFLOW_GRACE_MS : null,
+          voters: { me: { done: isDone(w, 'me') }, wife: { done: isDone(w, 'wife') } },
+        };
+      });
+    },
+
+    sweepOverflow: () => sweepOverflow(),
 
     async addPhoto(week, { bytes, ext, originalName, takenAt = null, score = null, thumb, fullJpeg } = {}) {
       checkWeek(week);
@@ -330,7 +432,9 @@ export function createStore(rootDir, {
           await atomicWrite(files[0], bytes);
           await atomicWrite(files[1], thumb);
           if (hasFull) await atomicWrite(files[2], fullJpeg);
-          w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt: now(), hasFullJpeg: hasFull });
+          const addedAt = now();
+          w.photos.push({ id, ext: e, originalName: name, takenAt, score, addedAt, hasFullJpeg: hasFull });
+          if (w.photos.length > MAX_PER_WEEK && !Number.isFinite(w.overSince)) w.overSince = addedAt;
           await save(w);
         } catch (err) {
           for (const f of files) await unlink(f).catch(() => {});
@@ -348,10 +452,9 @@ export function createStore(rootDir, {
         if (w.status !== 'collecting') throw new StoreError('state', `week ${week} is ${w.status}`);
         const p = findPhoto(w, id);
         w.photos = w.photos.filter((x) => x.id !== id);
+        if (w.photos.length <= MAX_PER_WEEK) delete w.overSince;
         await save(w);
-        for (const f of [`${id}.${p.ext}`, `${id}.thumb.jpg`, `${id}.full.jpg`]) {
-          await unlink(join(poolDir, week, f)).catch((e) => { if (e.code !== 'ENOENT') throw e; });
-        }
+        await unlinkPhoto(week, p);
       });
     },
 
@@ -379,6 +482,9 @@ export function createStore(rootDir, {
         const w = await mustLoad(week);
         if (w.status !== 'collecting') throw new StoreError('state', `week ${week} is ${w.status}`);
         if (!w.photos.length) throw new StoreError('state', `week ${week} has no photos`);
+        if (w.photos.length > MAX_PER_WEEK) {
+          throw new StoreError('state', '16장 이하로 줄여야 투표를 시작할 수 있어요.');
+        }
         const ids = w.photos.map((p) => p.id);
         w.voters = { me: createBracket(ids, rng), wife: createBracket(ids, rng) };
         w.tokens = { me: randomBytes(24).toString('base64url'), wife: randomBytes(24).toString('base64url') };

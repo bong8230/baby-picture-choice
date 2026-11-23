@@ -74,7 +74,7 @@ async function setup(t, opts = {}) {
   await writeFile(join(pub, 'vendor', 'mediapipe', 'wasm', 'x.wasm'), Buffer.from([0, 0x61, 0x73, 0x6d]));
   await writeFile(join(pub, 'vendor', 'mediapipe', 'face.task'), Buffer.from([1, 2, 3]));
   await writeFile(join(root, 'config.json'), JSON.stringify({ adminLogin: ADMIN, secret: 'leak' }));
-  const store = createStore(root, { rng: seeded(), log: () => {} });
+  const store = createStore(root, { rng: seeded(), log: () => {}, ...opts.store });
   const server = createServer({
     rootDir: root,
     publicDir: pub,
@@ -99,6 +99,30 @@ async function votingWeek(store, n = 4, week = WEEK) {
   const tokens = await store.startVoting(week);
   return { ids, tokens };
 }
+
+test('birth date settings are admin-only and appear in registered voter views', async (t) => {
+  const { port, store } = await setup(t);
+  const path = '/api/admin/settings';
+  assert.deepEqual((await req(port, 'GET', path, { headers: ADMIN_H })).json, { birthDate: null });
+  assert.equal((await req(port, 'PUT', path, { headers: ADMIN_H, body: { birthDate: '2026-02-30' } })).status, 400);
+  const updated = await req(port, 'PUT', path, { headers: ADMIN_H, body: { birthDate: '2026-09-20' } });
+  assert.equal(updated.status, 200);
+  assert.deepEqual((await req(port, 'GET', path, { headers: ADMIN_H })).json, { birthDate: '2026-09-20' });
+  assert.equal((await req(port, 'GET', path, { headers: { ...ADMIN_H, ...FUNNEL } })).status, 404);
+  const { tokens } = await votingWeek(store, 2, '2026-W49');
+  const view = (await req(port, 'GET', `/v/${tokens.me}/api/state`, { headers: FUNNEL })).json;
+  assert.deepEqual([view.week, view.birthDate, view.weekLabel, view.babyWeekText],
+    ['2026-W49', '2026-09-20', '2026년 12월 1주차', '생후 72~78일 · 11주차']);
+});
+
+test('admin weeks request sweeps due collecting overflow before returning counts', async (t) => {
+  let now = 1234;
+  const { port, store } = await setup(t, { store: { now: () => now } });
+  for (let i = 0; i < 17; i += 1) await store.addPhoto(WEEK, photo(i));
+  now += 48 * 60 * 60 * 1000;
+  const weeks = (await req(port, 'GET', '/api/admin/weeks', { headers: ADMIN_H })).json;
+  assert.deepEqual([weeks[0].count, weeks[0].overBy, weeks[0].deleteAt], [16, 0, null]);
+});
 
 test('funnel requests to admin paths and admin-only static are 404', async (t) => {
   const { port } = await setup(t);
