@@ -67,6 +67,8 @@
 
 .admin button:disabled,
 .file-picker input:disabled + span { opacity: 0.55; cursor: default; }
+.file-picker + .file-picker { margin-left: 0.5rem; }
+.file-picker span.alt { background: #f2f7f2; color: var(--ink); border-color: var(--line); }
 .admin button.secondary { background: #f2f7f2; color: var(--ink); border-color: var(--line); }
 .admin :focus-visible { outline: 3px solid #246344; outline-offset: 2px; }
 

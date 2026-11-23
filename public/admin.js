@@ -31,6 +31,7 @@ const EXCLUSION_LABELS = {
 };
 
 const input = document.querySelector('#photo-input');
+const inputAny = document.querySelector('#photo-input-any');
 const refreshButton = document.querySelector('#refresh');
 const funnel = document.querySelector('#funnel');
 const progress = document.querySelector('#progress');
@@ -493,16 +494,20 @@ function renderDrafts() {
 
 function render() {
   input.disabled = busy || weeks === null;
+  inputAny.disabled = input.disabled;
   refreshButton.disabled = busy;
   renderDrafts();
   renderWeeks();
 }
 
-input.addEventListener('change', () => {
-  const files = [...input.files];
-  input.value = '';
-  if (files.length) void run(() => analyzeSelection(files));
-});
+// "다른 앱으로 선택" has no accept filter, so Chrome may offer an app chooser (e.g. Gallery) instead of the photo picker.
+for (const picker of [input, inputAny]) {
+  picker.addEventListener('change', () => {
+    const files = [...picker.files];
+    picker.value = '';
+    if (files.length) void run(() => analyzeSelection(files));
+  });
+}
 
 async function refresh() {
   await run(() => Promise.all([refreshWeeks(), refreshFunnel()]));
