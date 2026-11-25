@@ -105,14 +105,14 @@ test('birth date settings are admin-only and appear in registered voter views', 
   const path = '/api/admin/settings';
   assert.deepEqual((await req(port, 'GET', path, { headers: ADMIN_H })).json, { birthDate: null });
   assert.equal((await req(port, 'PUT', path, { headers: ADMIN_H, body: { birthDate: '2026-02-30' } })).status, 400);
-  const updated = await req(port, 'PUT', path, { headers: ADMIN_H, body: { birthDate: '2026-09-20' } });
+  const updated = await req(port, 'PUT', path, { headers: ADMIN_H, body: { birthDate: '2025-03-02' } });
   assert.equal(updated.status, 200);
-  assert.deepEqual((await req(port, 'GET', path, { headers: ADMIN_H })).json, { birthDate: '2026-09-20' });
+  assert.deepEqual((await req(port, 'GET', path, { headers: ADMIN_H })).json, { birthDate: '2025-03-02' });
   assert.equal((await req(port, 'GET', path, { headers: { ...ADMIN_H, ...FUNNEL } })).status, 404);
   const { tokens } = await votingWeek(store, 2, '2026-W49');
   const view = (await req(port, 'GET', `/v/${tokens.me}/api/state`, { headers: FUNNEL })).json;
   assert.deepEqual([view.week, view.birthDate, view.weekLabel, view.babyWeekText],
-    ['2026-W49', '2026-09-20', '2026년 12월 1주차', '생후 72~78일 · 11주차']);
+    ['2026-W49', '2025-03-02', '2026년 12월 1주차', '생후 639~645일 · 92주차']);
 });
 
 test('admin weeks request sweeps due collecting overflow before returning counts', async (t) => {

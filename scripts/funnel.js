@@ -87,7 +87,7 @@ if (!isDeepStrictEqual(others(before), others(after))) {
   console.error('!!!!!!!! WARNING: serve config on ports other than 10000 CHANGED !!!!!!!!');
   console.error('before:', JSON.stringify(others(before), null, 2));
   console.error('after: ', JSON.stringify(others(after), null, 2));
-  console.error('Restore manually: 443 -> http://127.0.0.1:18951 and 8443 -> http://127.0.0.1:8787.');
+  console.error('Restore the other ports manually from the 'before' config above.');
   console.error('NEVER run `tailscale serve reset`.');
 }
 

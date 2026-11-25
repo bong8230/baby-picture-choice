@@ -39,11 +39,11 @@
 ## 제약
 
 - 휴대폰: 갤럭시(본인), 아내 휴대폰(기종 미정, 최신 Chrome 또는 Safari 가정).
-- PC: Windows 11, Node v24, Tailscale 1.104.6(`my-pc.example-tailnet.ts.net`).
+- PC: Windows 11, Node v24, Tailscale.
 - 본인 갤럭시에는 Tailscale이 있다. 아내는 Tailscale을 쓰지 않는다.
 - 공유기 내부 IP가 없다. 외부 접속은 Tailscale Funnel로만 한다.
-- 포트 8787은 다른 프로그램이 쓰고 있다. 이 앱은 `127.0.0.1:8790`을 쓴다.
-- 기존 Tailscale serve 설정(443 → 18951, 8443 → 8787)은 건드리지 않는다. 443과 8443에 Funnel을 켜면 그 서비스들까지 공개되므로 쓰지 않는다. 이 앱은 **10000 포트**를 쓴다.
+- 이 앱은 `127.0.0.1:8790`을 쓴다.
+- 다른 포트의 기존 Tailscale serve 설정은 건드리지 않는다. 그 포트에 Funnel을 켜면 다른 서비스까지 공개되므로, 이 앱은 전용 **10000 포트**를 쓴다.
 - Chrome Android는 HEIC를 디코딩하지 못한다. 갤럭시 기본 설정은 JPEG이다.
 
 ## 접근 방식
@@ -181,7 +181,7 @@ export async function analyzeDay(files, { onProgress } = {})
 
 ## 구현 첫 단계 (검증 스파이크)
 
-1. 10000 포트 serve와 funnel을 켜고 끈다. 전환 전·후·복귀 후 `tailscale serve status --json`을 비교해 443과 8443 매핑이 그대로인지 확인한다.
+1. 10000 포트 serve와 funnel을 켜고 끈다. 전환 전·후·복귀 후 `tailscale serve status --json`을 비교해 10000 외 포트 매핑이 그대로인지 확인한다.
    상태 표시는 명령 성공 여부가 아니라 실제 설정을 읽어서 한다.
 2. 휴대폰 데이터망(Wi-Fi 끔)으로 Funnel 주소에 접속해 `Tailscale-Funnel-Request` 헤더를 확인한다.
    위조 헤더를 보내도 `/admin`과 업로드 API가 404인지 확인한다. off 뒤에는 외부 접속이 끊기는지 확인한다.

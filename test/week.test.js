@@ -40,14 +40,14 @@ test('babyDay counts Seoul calendar days including the birth day', () => {
 });
 
 test('babyWeekText clamps the first week and hides all earlier weeks', () => {
-  assert.equal(babyWeekText('2026-09-20', '2026-W49'), '생후 72~78일 · 11주차');
+  assert.equal(babyWeekText('2025-03-02', '2026-W49'), '생후 639~645일 · 92주차');
   assert.equal(babyWeekText('2026-12-03', '2026-W49'), '생후 1~4일 · 1주차');
   assert.equal(babyWeekText('2026-12-07', '2026-W49'), null);
   assert.equal(babyWeekText(null, '2026-W49'), null);
 });
 
 test('babyDayText formats a millisecond timestamp or returns null', () => {
-  assert.equal(babyDayText('2026-09-20', Date.parse('2026-12-03T01:00:00Z')), '생후 75일');
-  assert.equal(babyDayText('2026-09-20', null), null);
-  assert.equal(babyDayText('2026-09-20', Date.parse('2026-09-19T14:00:00Z')), null);
+  assert.equal(babyDayText('2025-03-02', Date.parse('2026-12-03T01:00:00Z')), '생후 642일');
+  assert.equal(babyDayText('2025-03-02', null), null);
+  assert.equal(babyDayText('2025-03-02', Date.parse('2025-03-01T14:00:00Z')), null);
 });

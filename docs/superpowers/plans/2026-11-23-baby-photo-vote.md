@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- 서버는 `127.0.0.1:8790`에만 바인딩한다. 포트 8787은 다른 프로그램이 쓴다.
-- Tailscale은 10000 포트만 쓴다. 443(→18951)과 8443(→8787) serve 설정은 절대 바꾸지 않는다. `tailscale serve reset`은 금지한다.
+- 서버는 `127.0.0.1:8790`에만 바인딩한다.
+- Tailscale은 10000 포트만 쓴다. 다른 포트의 serve 설정은 절대 바꾸지 않는다. `tailscale serve reset`은 금지한다.
 - 런타임 npm 의존성은 0개다. 브라우저 라이브러리는 `public/vendor/`에 버전을 고정해 두고, CDN은 쓰지 않는다.
 - 원본 사진은 받은 바이트 그대로 저장하고 복사한다. 재인코딩과 리사이즈는 금지한다.
 - 주차 ID는 `^\d{4}-W\d{2}$` 형식이다(ISO 8601 주차).
@@ -52,10 +52,10 @@
   - (토큰 폐기는 Task 8에서 붙인다.)
 - [ ] **Step 3:** `spike/headers-server.js`를 만든다. `127.0.0.1:8790`에서 받은 요청 헤더를 JSON으로 그대로 돌려준다.
 - [ ] **Step 4: 검증 (사용자와 함께)**
-  1. `npm run funnel:off` 실행: 10000 포트가 tailnet, 443·8443이 그대로여야 한다.
+  1. `npm run funnel:off` 실행: 10000 포트가 tailnet, 다른 포트 설정이 그대로여야 한다.
   2. 갤럭시(tailnet)에서 `https://my-pc.example-tailnet.ts.net:10000` 접속: `Tailscale-User-Login`이 보이고 `Tailscale-Funnel-Request`는 없어야 한다. 이 login 값을 `config.json`의 `adminLogin`에 기록한다.
   3. `npm run funnel:on` 후 휴대폰 데이터망(Wi-Fi·Tailscale 끔)으로 접속: `Tailscale-Funnel-Request: ?1`이 보여야 한다. `curl -H "Tailscale-Funnel-Request: x" -H "Tailscale-User-Login: x"`로 위조해도 서버에는 위조 값이 도달하지 않아야 한다.
-  4. `npm run funnel:off` 후 외부 접속이 실패해야 하고, 443·8443이 그대로여야 한다.
+  4. `npm run funnel:off` 후 외부 접속이 실패해야 하고, 다른 포트 설정이 그대로여야 한다.
   - Funnel이 tailnet 정책에서 막혀 있으면 멈춘다. 사용자에게 관리 콘솔에서 켜는 방법을 안내한다.
 - [ ] **Step 5:** 커밋 `chore: scaffold project and funnel toggle script`
 
