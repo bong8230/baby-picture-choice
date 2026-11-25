@@ -6,6 +6,8 @@ PC에서 Node 서버(127.0.0.1:8790, 런타임 의존성 없음)를 실행하고
 ## 첫 설정
 1. `config.example.json`을 `config.json`으로 복사합니다.
 2. `config.json`의 `adminLogin`에 본인 Tailscale 로그인 주소를 적습니다.
+   `publicBase`에는 이 PC의 Tailscale 주소를 적습니다. 예: `https://my-pc.example-tailnet.ts.net:10000`
+   (`tailscale status --json`의 `Self.DNSName`에서 확인할 수 있습니다.)
 3. `npm run funnel:off`를 한 번 실행합니다. 포트 10000을 tailnet 전용 serve로 설정합니다.
    (`tailscale serve --bg --https=10000 http://127.0.0.1:8790`와 같은 설정입니다.)
 
@@ -18,7 +20,7 @@ PC에서 Node 서버(127.0.0.1:8790, 런타임 의존성 없음)를 실행하고
 6. 투표가 끝나면 결과를 확인합니다.
 7. `npm run funnel:off`로 공개 접속을 닫습니다.
 
-관리 화면: `https://my-pc.example-tailnet.ts.net:10000/admin`
+관리 화면: `<publicBase>/admin` (예: `https://my-pc.example-tailnet.ts.net:10000/admin`)
 
 ## 갤러리에서 공유로 올리기
 

@@ -1,4 +1,5 @@
 {
   "adminLogin": "your-tailscale-login@example.com",
-  "port": 8790
+  "port": 8790,
+  "publicBase": "https://my-pc.example-tailnet.ts.net:10000"
 }
